@@ -2,13 +2,14 @@
 
 A tray app for macOS, Windows and Ubuntu GNOME that sets a new Unsplash photo as the desktop wallpaper on a schedule, and **never lets its image cache grow**.
 
-Other rotators save every photo they cycle through. This one keeps exactly two files: the wallpaper in use and one photo downloaded ahead so "Next" is instant. Everything else in its cache folder is deleted after each rotation, and a hard size cap (200 MB by default) backs that up. Photos you want to keep go to a separate favorites folder that cleanup never touches.
+Other rotators save every photo they cycle through. This one keeps only the wallpaper in use and the next one, downloaded ahead so "Next" is instant (one photo each, or one per display). Everything else in its cache folder is deleted after each rotation, and a hard size cap (200 MB by default) backs that up. Photos you want to keep go to a separate favorites folder that cleanup never touches.
 
 ## Features
 
 - Rotates hourly, every 6 hours, daily (default), weekly, or only on request.
 - Photos from an Unsplash search ("mountains") or topics (default: `wallpapers`).
-- Downloads each photo cropped to your largest screen's resolution instead of the multi-MB original.
+- Downloads each photo cropped to your screen's resolution instead of the multi-MB original.
+- Optional different photo on each display, each sized for that display.
 - Tray popover: preview, location, next, save to favorites, photographer credit, settings.
 - Starts at login (release builds).
 
@@ -33,7 +34,7 @@ cargo build --release -p wallpaper-rotator
 
 For an installable bundle (`.app`/`.dmg`, `.msi`, `.deb`), install the Tauri CLI (`cargo install tauri-cli --version "^2"`) and run `cargo tauri build` inside `app/`.
 
-The headless CLI is handy for testing: `cargo run -p rotator-core --bin wallpaper-rotator-cli -- rotate` (also `status`, `cleanup`, `paths`). Don't run `rotate` while the tray app is running.
+The headless CLI is handy for testing: `cargo run -p rotator-core --bin wallpaper-rotator-cli -- rotate` (also `status`, `cleanup`, `displays`, `paths`). Don't run `rotate` while the tray app is running.
 
 ## How it works
 
@@ -50,7 +51,8 @@ Files live in the platform folders (`wallpaper-rotator-cli paths` prints them): 
 ### Platform notes
 
 - **macOS** sets wallpapers per Space. When you switch to a Space still showing an older photo from the cache, the app switches it to the current one.
-- **GNOME** has no click events for tray icons, so the tray icon opens a menu (Show, Next, Save to favorites, Pause, Quit). Ubuntu's AppIndicator extension, on by default, shows it. GNOME uses one image across all monitors.
+- **GNOME** has no click events for tray icons, so the tray icon opens a menu (Show, Next, Save to favorites, Pause, Quit). Ubuntu's AppIndicator extension, on by default, shows it. GNOME has a single wallpaper for all monitors, so with a photo per display the app stitches them into one image laid out like your monitors and sets it as "spanned".
+- **Per display:** one Unsplash request returns a batch of candidates; bigger displays pick first, each taking the photo that covers it best. When monitors come or go, the current photos are re-placed (a new display borrows one) and the next rotation fetches photos sized for the new layout.
 - **Windows** copies the wallpaper into its own cache, so deleting old files is always safe.
 
 ### Unsplash API terms
