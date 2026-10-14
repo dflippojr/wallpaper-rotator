@@ -17,7 +17,7 @@ jobs:
         os: [ubuntu-24.04, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -38,7 +38,7 @@ jobs:
   installers:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Lint the shell scripts
         run: shellcheck -S warning install.sh scripts/build-release.sh
       - name: Dry-run install.sh
@@ -51,7 +51,7 @@ jobs:
   installer-windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Dry-run install.ps1 in Windows PowerShell 5.1
         shell: powershell
         env:

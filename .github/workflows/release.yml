@@ -15,7 +15,7 @@ jobs:
   create:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Check that the tag matches the app version
         run: |
           version=$(sed -n 's/^  "version": "\(.*\)",$/\1/p' app/tauri.conf.json)
@@ -43,7 +43,7 @@ jobs:
             bundles: nsis
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install the Linux libraries
