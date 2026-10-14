@@ -59,7 +59,10 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 
 /// Files this app writes into the images folder.
 fn is_ours(path: &Path) -> bool {
-    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default();
     name.ends_with(".jpg") || name.ends_with(".jpg.part")
 }
 
@@ -85,7 +88,9 @@ pub fn cleanup(images_dir: &Path, state: &mut State, cap_bytes: u64) -> Result<C
     let entries = match fs::read_dir(images_dir) {
         Ok(entries) => entries,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(report),
-        Err(e) => return Err(e).with_context(|| format!("could not list {}", images_dir.display())),
+        Err(e) => {
+            return Err(e).with_context(|| format!("could not list {}", images_dir.display()))
+        }
     };
     for entry in entries.flatten() {
         let path = entry.path();

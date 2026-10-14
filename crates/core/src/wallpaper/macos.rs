@@ -7,7 +7,8 @@ use objc2_app_kit::{NSScreen, NSWorkspace};
 use objc2_foundation::{NSDictionary, NSString, NSURL};
 
 fn main_thread() -> Result<MainThreadMarker> {
-    MainThreadMarker::new().ok_or_else(|| anyhow!("macOS wallpaper calls must run on the main thread"))
+    MainThreadMarker::new()
+        .ok_or_else(|| anyhow!("macOS wallpaper calls must run on the main thread"))
 }
 
 fn file_url(path: &Path) -> Result<Retained<NSURL>> {
@@ -18,8 +19,14 @@ fn file_url(path: &Path) -> Result<Retained<NSURL>> {
 fn set_for(workspace: &NSWorkspace, url: &NSURL, screen: &NSScreen) -> Result<()> {
     let options = NSDictionary::new();
     #[allow(unused_unsafe)]
-    unsafe { workspace.setDesktopImageURL_forScreen_options_error(url, screen, &options) }
-        .map_err(|e| anyhow!("macOS would not set the wallpaper: {}", e.localizedDescription()))
+    unsafe { workspace.setDesktopImageURL_forScreen_options_error(url, screen, &options) }.map_err(
+        |e| {
+            anyhow!(
+                "macOS would not set the wallpaper: {}",
+                e.localizedDescription()
+            )
+        },
+    )
 }
 
 pub fn set(path: &Path) -> Result<()> {

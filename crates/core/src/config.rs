@@ -45,8 +45,9 @@ impl Config {
     /// Loads the config, writing the defaults on first run.
     pub fn load_or_create(path: &Path) -> Result<Self> {
         match fs::read_to_string(path) {
-            Ok(text) => toml::from_str(&text)
-                .with_context(|| format!("could not parse {}", path.display())),
+            Ok(text) => {
+                toml::from_str(&text).with_context(|| format!("could not parse {}", path.display()))
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 let config = Self::default();
                 config.save(path)?;
@@ -107,7 +108,10 @@ mod tests {
 
     #[test]
     fn cache_cap_has_a_floor() {
-        let config = Config { cache_cap_mb: 0, ..Config::default() };
+        let config = Config {
+            cache_cap_mb: 0,
+            ..Config::default()
+        };
         assert_eq!(config.cache_cap_bytes(), 20 * 1024 * 1024);
     }
 }

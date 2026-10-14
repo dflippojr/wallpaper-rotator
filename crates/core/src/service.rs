@@ -118,14 +118,18 @@ impl Settings {
     }
 }
 
+pub type ApplyFn = Box<dyn Fn(&Path) -> Result<()> + Send>;
+pub type ScreenSizeFn = Box<dyn Fn() -> Option<(u32, u32)> + Send>;
+pub type NotifyFn = Box<dyn Fn(&Snapshot) + Send>;
+
 /// How the worker reaches the platform and the UI.
 pub struct Hooks {
     /// Sets the wallpaper. Must hop to the main thread on macOS.
-    pub apply: Box<dyn Fn(&Path) -> Result<()> + Send>,
+    pub apply: ApplyFn,
     /// Largest screen size in physical pixels, if known.
-    pub screen_size: Box<dyn Fn() -> Option<(u32, u32)> + Send>,
+    pub screen_size: ScreenSizeFn,
     /// Called whenever the snapshot changes.
-    pub notify: Box<dyn Fn(&Snapshot) + Send>,
+    pub notify: NotifyFn,
 }
 
 pub struct Service {
@@ -308,9 +312,15 @@ impl Service {
             return Err(e);
         }
         if let Err(e) = client.track_download(&next.download_location) {
-            log::write(&self.paths.log_file, &format!("download tracking failed: {e:#}"));
+            log::write(
+                &self.paths.log_file,
+                &format!("download tracking failed: {e:#}"),
+            );
         }
-        log::write(&self.paths.log_file, &format!("wallpaper set: {} by {}", next.id, next.author));
+        log::write(
+            &self.paths.log_file,
+            &format!("wallpaper set: {} by {}", next.id, next.author),
+        );
         self.state.current = Some(next);
         self.state.last_rotated = now();
         self.save_state();
@@ -375,7 +385,10 @@ impl Service {
             }
             photo = client.random_photo(&self.config.query, &topics)?;
         }
-        let file = self.paths.images_dir.join(format!("{}.jpg", safe_name(&photo.id)));
+        let file = self
+            .paths
+            .images_dir
+            .join(format!("{}.jpg", safe_name(&photo.id)));
         client.download(&unsplash::sized_url(&photo.urls.raw, width, height), &file)?;
         Ok(Wallpaper {
             id: photo.id,
@@ -399,10 +412,18 @@ impl Service {
     }
 
     fn favorite(&self) -> Result<PathBuf> {
-        let current = self.state.current.as_ref().context("no wallpaper to save yet")?;
+        let current = self
+            .state
+            .current
+            .as_ref()
+            .context("no wallpaper to save yet")?;
         let dir = self.favorites_dir();
         fs::create_dir_all(&dir).with_context(|| format!("could not create {}", dir.display()))?;
-        let dest = dir.join(format!("{} - {}.jpg", safe_name(&current.author), safe_name(&current.id)));
+        let dest = dir.join(format!(
+            "{} - {}.jpg",
+            safe_name(&current.author),
+            safe_name(&current.id)
+        ));
         if !dest.exists() {
             fs::copy(&current.file, &dest).context("could not copy the wallpaper")?;
         }
@@ -416,7 +437,11 @@ impl Service {
     }
 
     fn cleanup(&mut self) {
-        match store::cleanup(&self.paths.images_dir, &mut self.state, self.config.cache_cap_bytes()) {
+        match store::cleanup(
+            &self.paths.images_dir,
+            &mut self.state,
+            self.config.cache_cap_bytes(),
+        ) {
             Ok(report) => {
                 if report.removed_files > 0 {
                     log::write(
@@ -441,10 +466,20 @@ impl Service {
 fn safe_name(s: &str) -> String {
     let cleaned: String = s
         .chars()
-        .map(|c| if c.is_alphanumeric() || matches!(c, '-' | '_' | ' ' | '.') { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || matches!(c, '-' | '_' | ' ' | '.') {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let trimmed = cleaned.trim_matches(|c: char| c == '.' || c == ' ');
-    if trimmed.is_empty() { "photo".into() } else { trimmed.chars().take(80).collect() }
+    if trimmed.is_empty() {
+        "photo".into()
+    } else {
+        trimmed.chars().take(80).collect()
+    }
 }
 
 #[cfg(test)]
@@ -582,7 +617,10 @@ mod tests {
 
     #[test]
     fn settings_round_trip() {
-        let mut config = Config { access_key: "old".into(), ..Config::default() };
+        let mut config = Config {
+            access_key: "old".into(),
+            ..Config::default()
+        };
         let mut settings = Settings::from_config(&config);
         assert_eq!(settings.topics, "wallpapers");
         settings.topics = " nature, ,film ".into();

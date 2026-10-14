@@ -98,7 +98,10 @@ impl Client {
             .user_agent("wallpaper-rotator/0.1")
             .build()
             .new_agent();
-        Ok(Self { agent, key: key.to_string() })
+        Ok(Self {
+            agent,
+            key: key.to_string(),
+        })
     }
 
     fn get(&self, url: &str) -> Result<ureq::http::Response<ureq::Body>> {
@@ -203,7 +206,9 @@ fn encode_component(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
             _ => out.push_str(&format!("%{b:02X}")),
         }
     }
@@ -230,7 +235,10 @@ mod tests {
         let photo: Photo = serde_json::from_str(SAMPLE).unwrap();
         assert_eq!(photo.id, "abc123");
         assert_eq!(photo.user.name, "Mario Dobelmann");
-        assert_eq!(photo.location.unwrap().label().as_deref(), Some("Kirchsee, Germany"));
+        assert_eq!(
+            photo.location.unwrap().label().as_deref(),
+            Some("Kirchsee, Germany")
+        );
     }
 
     #[test]
@@ -241,7 +249,11 @@ mod tests {
         );
         let photo: Photo = serde_json::from_str(&without).unwrap();
         assert!(photo.location.is_none());
-        let empty = Location { name: Some(" ".into()), city: None, country: Some("".into()) };
+        let empty = Location {
+            name: Some(" ".into()),
+            city: None,
+            country: Some("".into()),
+        };
         assert_eq!(empty.label(), None);
     }
 
@@ -256,7 +268,10 @@ mod tests {
 
     #[test]
     fn encodes_queries() {
-        assert_eq!(encode_component("snowy mountains & lakes"), "snowy%20mountains%20%26%20lakes");
+        assert_eq!(
+            encode_component("snowy mountains & lakes"),
+            "snowy%20mountains%20%26%20lakes"
+        );
         assert_eq!(encode_component("a,b"), "a%2Cb");
     }
 

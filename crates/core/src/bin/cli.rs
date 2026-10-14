@@ -27,7 +27,11 @@ fn main() -> Result<()> {
             let mut state = State::load(&paths.state_file);
             let report = store::cleanup(&paths.images_dir, &mut state, config.cache_cap_bytes())?;
             state.save(&paths.state_file)?;
-            println!("removed {} files ({} KB)", report.removed_files, report.removed_bytes / 1024);
+            println!(
+                "removed {} files ({} KB)",
+                report.removed_files,
+                report.removed_bytes / 1024
+            );
             Ok(())
         }
         Some("paths") => {
@@ -44,7 +48,7 @@ fn main() -> Result<()> {
 
 fn rotate(paths: Paths) -> Result<()> {
     let hooks = Hooks {
-        apply: Box::new(|path| wallpaper::set(path)),
+        apply: Box::new(wallpaper::set),
         screen_size: Box::new(|| {
             let size = std::env::var("ROTATOR_SIZE").ok()?;
             let (w, h) = size.split_once('x')?;
@@ -82,6 +86,9 @@ fn status(paths: &Paths) -> Result<()> {
                 .fold((0, 0u64), |(c, b), m| (c + 1, b + m.len()))
         })
         .unwrap_or((0, 0));
-    println!("cache:   {count} files, {:.1} MB", bytes as f64 / 1024.0 / 1024.0);
+    println!(
+        "cache:   {count} files, {:.1} MB",
+        bytes as f64 / 1024.0 / 1024.0
+    );
     Ok(())
 }

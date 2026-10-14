@@ -12,7 +12,10 @@ pub fn write(path: &Path, message: &str) {
     if let Some(dir) = path.parent() {
         let _ = fs::create_dir_all(dir);
     }
-    if fs::metadata(path).map(|m| m.len() > MAX_LOG_BYTES).unwrap_or(false) {
+    if fs::metadata(path)
+        .map(|m| m.len() > MAX_LOG_BYTES)
+        .unwrap_or(false)
+    {
         let _ = fs::rename(path, path.with_extension("log.old"));
     }
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {

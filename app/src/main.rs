@@ -13,7 +13,9 @@ use rotator_core::{log, wallpaper};
 use tauri::image::Image;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, Rect, State, WebviewWindow, WindowEvent};
+use tauri::{
+    AppHandle, Emitter, Manager, PhysicalPosition, Rect, State, WebviewWindow, WindowEvent,
+};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt as _};
 use tauri_plugin_opener::OpenerExt;
 
@@ -102,7 +104,9 @@ fn open_link(app: AppHandle, url: String) -> Result<(), String> {
     if !allowed.iter().any(|prefix| url.starts_with(prefix)) {
         return Err("only Unsplash links can be opened".into());
     }
-    app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -139,7 +143,10 @@ fn sync_autostart(app: &AppHandle, enabled: bool) {
     };
     if let Err(e) = result {
         let paths = &app.state::<AppState>().paths;
-        log::write(&paths.log_file, &format!("could not update start at login: {e}"));
+        log::write(
+            &paths.log_file,
+            &format!("could not update start at login: {e}"),
+        );
     }
 }
 
@@ -162,7 +169,8 @@ fn place_near(window: &WebviewWindow, icon: &Rect) -> tauri::Result<()> {
     let (mx, my) = (monitor.position().x as f64, monitor.position().y as f64);
     let (mw, mh) = (monitor.size().width as f64, monitor.size().height as f64);
     let margin = 8.0 * scale;
-    let x = (center_x - win_w / 2.0).clamp(mx + margin, (mx + mw - win_w - margin).max(mx + margin));
+    let x =
+        (center_x - win_w / 2.0).clamp(mx + margin, (mx + mw - win_w - margin).max(mx + margin));
     let y = if center_y < my + mh / 2.0 {
         pos.y + size.height + margin
     } else {
@@ -172,7 +180,9 @@ fn place_near(window: &WebviewWindow, icon: &Rect) -> tauri::Result<()> {
 }
 
 fn show_popover(app: &AppHandle, near: Option<&Rect>) {
-    let Some(window) = app.get_webview_window("main") else { return };
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
     match near {
         Some(rect) => {
             let _ = place_near(&window, rect);
@@ -187,7 +197,9 @@ fn show_popover(app: &AppHandle, near: Option<&Rect>) {
 }
 
 fn toggle_popover(app: &AppHandle, near: &Rect) {
-    let Some(window) = app.get_webview_window("main") else { return };
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
     if window.is_visible().unwrap_or(false) {
         let _ = window.hide();
         return;
@@ -284,7 +296,9 @@ fn watch_spaces(app: AppHandle, paths: Paths, current: Arc<Mutex<Option<PathBuf>
     // still shows an older (possibly deleted) photo, switch it to the current one.
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_secs(2));
-        let Some(file) = current.lock().unwrap().clone() else { continue };
+        let Some(file) = current.lock().unwrap().clone() else {
+            continue;
+        };
         let images = paths.images_dir.clone();
         let _ = on_main(&app, move || wallpaper::reconcile(&file, &images));
     });
@@ -304,7 +318,10 @@ fn main() {
             show_popover(app, None);
         }))
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
+        .plugin(tauri_plugin_autostart::init(
+            MacosLauncher::LaunchAgent,
+            None,
+        ))
         .invoke_handler(tauri::generate_handler![
             get_state,
             next_wallpaper,
@@ -392,7 +409,10 @@ fn main() {
         .expect("error while building Wallpaper Rotator")
         .run(|_app, event| {
             // Closing the popover must not quit the tray app.
-            if let tauri::RunEvent::ExitRequested { code: None, api, .. } = event {
+            if let tauri::RunEvent::ExitRequested {
+                code: None, api, ..
+            } = event
+            {
                 api.prevent_exit();
             }
         });
