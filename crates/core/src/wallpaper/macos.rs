@@ -44,7 +44,8 @@ pub fn reconcile(current: &Path, images_dir: &Path) -> Result<bool> {
         // Only replace our own stale photos, never a wallpaper the user picked.
         if let Some(shown) = shown {
             if shown != current && shown.starts_with(images_dir) {
-                set_for(&workspace, &file_url(current)?, &screen)?;
+                let url = file_url(current)?;
+                set_for(&workspace, &url, &screen)?;
                 changed = true;
             }
         }
