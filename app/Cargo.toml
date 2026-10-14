@@ -13,7 +13,7 @@ tauri-build = { version = "2", features = [] }
 anyhow = "1"
 rotator-core = { path = "../crates/core" }
 serde = { version = "1", features = ["derive"] }
-tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri = { version = "2", features = ["tray-icon", "image-png", "protocol-asset"] }
 tauri-plugin-autostart = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-single-instance = "2"

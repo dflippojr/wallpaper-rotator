@@ -1,29 +1,45 @@
 //! The rotation worker. One thread owns the config, state and cache; the UI
 //! talks to it through [`Command`]s and gets [`Snapshot`]s back, so nothing
 //! else touches the images folder.
+//!
+//! Photos come from the sources ticked in Settings. Each source's answers
+//! are queued, so most rotations need no search request; each photo is
+//! taken from a randomly ordered source, and a source that fails or is
+//! rate-limited rests while the others (and finally the favorites folder)
+//! fill in.
 
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use serde::Serialize;
 
 use crate::config::Config;
+use crate::net::{self, Http};
 use crate::paths::Paths;
+use crate::source::{self, daily, favorites, pexels, unsplash, wallhaven, Candidate, SourceId};
 use crate::store::{self, Set, State, Wallpaper};
-use crate::unsplash::{self, Client, Photo};
 use crate::wallpaper::{self, Display, Layout};
 use crate::{log, now};
 
 const TICK: Duration = Duration::from_secs(60);
-/// Wait this long after a failed fetch before trying again on a tick.
+/// Wait this long after every source failed before trying again on a tick.
 const RETRY_AFTER_SECS: u64 = 15 * 60;
+/// How long a source rests after a rate limit, or after another error.
+const RATE_LIMIT_REST_SECS: u64 = 20 * 60;
+const ERROR_REST_SECS: u64 = 10 * 60;
 const FALLBACK_SIZE: (u32, u32) = (3840, 2160);
-/// Random photos to ask for per display, to pick ones big enough.
-const CANDIDATES_PER_DISPLAY: u32 = 3;
+/// Ask a source for a fresh batch when its best queued photo covers less
+/// of the display than this.
+const GOOD_ENOUGH: f64 = 0.75;
+/// Photos to try from one source before moving on to the next.
+const TRIES_PER_SOURCE: usize = 3;
+/// Queued candidates kept per source.
+const QUEUE_LIMIT: usize = 120;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
@@ -48,7 +64,11 @@ pub struct Snapshot {
     pub busy: bool,
     pub error: Option<String>,
     pub notice: Option<String>,
-    pub has_key: bool,
+    /// No ticked source can deliver photos (for example, only Unsplash is
+    /// ticked and it has no key), so the popover opens Settings.
+    pub needs_setup: bool,
+    pub has_unsplash_key: bool,
+    pub has_pexels_key: bool,
     pub settings: Settings,
     pub next_rotation_at: Option<u64>,
     pub favorites_dir: String,
@@ -61,30 +81,57 @@ pub struct WallpaperView {
     pub author_url: String,
     pub photo_url: String,
     pub preview_url: String,
+    /// The cached file, for previews of photos with no hosted preview
+    /// (favorites).
+    pub preview_file: Option<String>,
     pub location: Option<String>,
     pub description: Option<String>,
     pub color: Option<String>,
     /// The display it is on; `None` when one photo covers every display.
     pub display: Option<String>,
+    /// Where it came from, for the credit line ("Unsplash", "Bing").
+    pub source: String,
 }
 
 impl From<&Wallpaper> for WallpaperView {
     fn from(w: &Wallpaper) -> Self {
+        let unsplash = w.source == SourceId::Unsplash;
+        let link = |url: &str| {
+            if unsplash {
+                unsplash::with_utm(url)
+            } else {
+                url.to_string()
+            }
+        };
         Self {
             id: w.id.clone(),
             author: w.author.clone(),
-            author_url: unsplash::with_utm(&w.author_url),
-            photo_url: unsplash::with_utm(&w.photo_url),
+            author_url: link(&w.author_url),
+            photo_url: link(&w.photo_url),
             preview_url: w.preview_url.clone(),
+            preview_file: w
+                .preview_url
+                .is_empty()
+                .then(|| w.file.display().to_string()),
             location: w.location.clone(),
             description: w.description.clone(),
             color: w.color.clone(),
             display: w.display.as_ref().map(|d| d.name.clone()),
+            source: provider(w.source, &w.id).into(),
         }
     }
 }
 
-/// Settings as the UI edits them. The key is write-only from the UI's side.
+/// The name to credit: picture-of-the-day photos come from Bing or Commons.
+fn provider(source: SourceId, id: &str) -> &'static str {
+    match source {
+        SourceId::Daily if id.starts_with("bing-") => "Bing",
+        SourceId::Daily => "Wikimedia Commons",
+        other => other.name(),
+    }
+}
+
+/// Settings as the UI edits them. Keys are write-only from the UI's side.
 #[derive(Debug, Clone, Default, Serialize, serde::Deserialize)]
 pub struct Settings {
     pub query: String,
@@ -95,6 +142,8 @@ pub struct Settings {
     pub start_at_login: bool,
     #[serde(default)]
     pub per_display: bool,
+    #[serde(default)]
+    pub sources: Vec<SourceId>,
 }
 
 impl Settings {
@@ -107,11 +156,17 @@ impl Settings {
             cache_cap_mb: c.cache_cap_mb,
             start_at_login: c.start_at_login,
             per_display: c.per_display,
+            sources: c.sources.clone(),
         }
     }
 
-    /// Applies UI settings to a config. An empty `new_key` keeps the old key.
-    pub fn apply_to(&self, config: &mut Config, new_key: Option<&str>) {
+    /// Applies UI settings to a config. An empty key keeps the old key.
+    pub fn apply_to(
+        &self,
+        config: &mut Config,
+        unsplash_key: Option<&str>,
+        pexels_key: Option<&str>,
+    ) {
         config.query = self.query.trim().to_string();
         config.topics = self
             .topics
@@ -124,8 +179,20 @@ impl Settings {
         config.cache_cap_mb = self.cache_cap_mb.max(20);
         config.start_at_login = self.start_at_login;
         config.per_display = self.per_display;
-        if let Some(key) = new_key.map(str::trim).filter(|k| !k.is_empty()) {
-            config.access_key = key.to_string();
+        config.sources = SourceId::ALL
+            .into_iter()
+            .filter(|s| self.sources.contains(s))
+            .collect();
+        let new = |key: Option<&str>| {
+            key.map(str::trim)
+                .filter(|k| !k.is_empty())
+                .map(String::from)
+        };
+        if let Some(key) = new(unsplash_key) {
+            config.access_key = key;
+        }
+        if let Some(key) = new(pexels_key) {
+            config.pexels_key = key;
         }
     }
 }
@@ -149,28 +216,39 @@ pub struct Service {
     config: Config,
     state: State,
     hooks: Hooks,
+    http: Http,
     /// Displays as of the last check, to notice monitors coming and going.
     displays: Vec<Display>,
     busy: bool,
     error: Option<String>,
     notice: Option<String>,
     last_failed_fetch: u64,
+    /// Sources resting after an error, until this time.
+    resting: HashMap<SourceId, u64>,
+    rng: u64,
 }
 
 impl Service {
     pub fn new(paths: Paths, hooks: Hooks) -> Result<Self> {
         let config = Config::load_or_create(&paths.config_file)?;
         let state = State::load(&paths.state_file);
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(1);
         Ok(Self {
             paths,
             config,
             state,
             hooks,
+            http: Http::default(),
             displays: Vec::new(),
             busy: false,
             error: None,
             notice: None,
             last_failed_fetch: 0,
+            resting: HashMap::new(),
+            rng: seed | 1,
         })
     }
 
@@ -199,9 +277,11 @@ impl Service {
     }
 
     pub fn handle(&mut self, command: Command) {
-        self.notice = None;
         match command {
-            Command::Next => self.rotate_and_prefetch(),
+            Command::Next => {
+                self.notice = None;
+                self.rotate_and_prefetch();
+            }
             Command::Favorite(index) => {
                 match self.favorite(index) {
                     Ok(saved) => self.notice = Some(saved),
@@ -210,6 +290,7 @@ impl Service {
                 self.publish();
             }
             Command::Reload => {
+                self.notice = None;
                 self.reload();
                 self.handle(Command::Tick);
             }
@@ -223,6 +304,7 @@ impl Service {
             Command::Tick => {
                 self.check_displays();
                 if self.rotation_due() {
+                    self.notice = None;
                     self.rotate_and_prefetch();
                 } else {
                     self.prefetch_if_needed();
@@ -247,7 +329,9 @@ impl Service {
             busy: self.busy,
             error: self.error.clone(),
             notice: self.notice.clone(),
-            has_key: !self.config.effective_key().is_empty(),
+            needs_setup: !self.can_fetch(),
+            has_unsplash_key: !self.config.effective_key().is_empty(),
+            has_pexels_key: !self.config.effective_pexels_key().is_empty(),
             settings: Settings::from_config(&self.config),
             next_rotation_at,
             favorites_dir: self.favorites_dir().display().to_string(),
@@ -268,16 +352,26 @@ impl Service {
         self.error = Some(message);
     }
 
+    fn log(&self, message: &str) {
+        log::write(&self.paths.log_file, message);
+    }
+
     fn reload(&mut self) {
         match Config::load_or_create(&self.paths.config_file) {
             Ok(config) => {
                 if !config.same_source(&self.config) {
-                    // The prefetched photos came from the old settings.
+                    // Prefetched and queued photos came from the old settings.
                     self.state.next = None;
+                    self.state.queue.clear();
+                    self.state.pexels_pages = None;
                     self.last_failed_fetch = 0;
+                    self.resting.clear();
                 }
-                if config.effective_key() != self.config.effective_key() {
+                if config.effective_key() != self.config.effective_key()
+                    || config.effective_pexels_key() != self.config.effective_pexels_key()
+                {
                     self.last_failed_fetch = 0;
+                    self.resting.clear();
                 }
                 self.config = config;
                 self.error = None;
@@ -286,6 +380,19 @@ impl Service {
             }
             Err(e) => self.fail(e),
         }
+    }
+
+    /// Whether a source can be asked at all (it has the key it needs).
+    fn usable(&self, source: SourceId) -> bool {
+        match source {
+            SourceId::Unsplash => !self.config.effective_key().is_empty(),
+            SourceId::Pexels => !self.config.effective_pexels_key().is_empty(),
+            SourceId::Wallhaven | SourceId::Daily | SourceId::Favorites => true,
+        }
+    }
+
+    fn can_fetch(&self) -> bool {
+        self.config.sources.iter().any(|&s| self.usable(s))
     }
 
     /// Asks the platform for the displays, keeping the last known list if
@@ -313,10 +420,7 @@ impl Service {
         if before.is_empty() || live == before {
             return;
         }
-        log::write(
-            &self.paths.log_file,
-            &format!("displays changed: {} connected", live.len()),
-        );
+        self.log(&format!("displays changed: {} connected", live.len()));
         let Some(current) = self.state.current.clone() else {
             return;
         };
@@ -338,7 +442,7 @@ impl Service {
     }
 
     fn rotation_due(&self) -> bool {
-        if self.config.effective_key().is_empty() {
+        if !self.can_fetch() {
             return false;
         }
         let current_missing = self.state.current.as_ref().is_none_or(|s| !s.on_disk());
@@ -373,28 +477,38 @@ impl Service {
     }
 
     fn rotate(&mut self) -> Result<()> {
-        let client = self.client()?;
+        if !self.can_fetch() {
+            bail!("tick a photo source in Settings (and add its key if it needs one)");
+        }
         let displays = self.live_displays();
         let each = self.each(&displays);
         let next = match self.state.next.take() {
             Some(set) if set.on_disk() && set.fits(&displays, each) => set,
-            _ => self.fetch(&client, &displays, each)?,
+            _ => {
+                let (set, notes) = self.fetch(&displays, each)?;
+                if !notes.is_empty() {
+                    self.notice = Some(fallback_notice(&notes, &set));
+                }
+                set
+            }
         };
         if let Err(e) = (self.hooks.apply)(&next.layout()) {
             self.state.next = Some(next);
             return Err(e);
         }
+        let key = self.config.effective_key();
         for photo in &next.photos {
-            if let Err(e) = client.track_download(&photo.download_location) {
-                log::write(
-                    &self.paths.log_file,
-                    &format!("download tracking failed: {e:#}"),
-                );
+            if photo.source == SourceId::Unsplash && !photo.download_location.is_empty() {
+                if let Err(e) = unsplash::track(&self.http, &key, &photo.download_location) {
+                    self.log(&format!("download tracking failed: {e:#}"));
+                }
             }
-            log::write(
-                &self.paths.log_file,
-                &format!("wallpaper set: {} by {}", photo.id, photo.author),
-            );
+            self.log(&format!(
+                "wallpaper set: {} by {} ({})",
+                photo.id,
+                photo.author,
+                photo.source.name()
+            ));
         }
         self.state.current = Some(next);
         self.state.last_rotated = now();
@@ -404,9 +518,7 @@ impl Service {
     }
 
     fn prefetch_if_needed(&mut self) {
-        if self.config.effective_key().is_empty()
-            || now() < self.last_failed_fetch + RETRY_AFTER_SECS
-        {
+        if !self.can_fetch() || now() < self.last_failed_fetch + RETRY_AFTER_SECS {
             return;
         }
         let displays = self.live_displays();
@@ -419,27 +531,260 @@ impl Service {
         if ready {
             return;
         }
-        let result = self
-            .client()
-            .and_then(|client| self.fetch(&client, &displays, each));
-        match result {
-            Ok(set) => {
+        match self.fetch(&displays, each) {
+            Ok((set, notes)) => {
+                if !notes.is_empty() {
+                    self.log(&format!("prefetch: {}", notes.join(", ")));
+                }
                 self.state.next = Some(set);
                 self.save_state();
                 self.cleanup();
             }
             Err(e) => {
                 self.last_failed_fetch = now();
-                log::write(&self.paths.log_file, &format!("prefetch failed: {e:#}"));
+                self.log(&format!("prefetch failed: {e:#}"));
             }
         }
     }
 
-    fn client(&self) -> Result<Client> {
-        Client::new(&self.config.effective_key())
+    fn random(&mut self) -> u64 {
+        // xorshift64: plenty for shuffling photo sources.
+        let mut x = self.rng;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.rng = x;
+        x
     }
 
-    fn topic_ids(&mut self, client: &Client) -> Result<Vec<String>> {
+    fn shuffle<T>(&mut self, items: &mut [T]) {
+        for i in (1..items.len()).rev() {
+            let j = (self.random() % (i as u64 + 1)) as usize;
+            items.swap(i, j);
+        }
+    }
+
+    /// Ticked, usable sources not resting, in random order, then the
+    /// favorites folder as a last resort even when it isn't ticked.
+    fn source_order(&mut self) -> Vec<SourceId> {
+        let now = now();
+        let mut order: Vec<SourceId> = self
+            .config
+            .sources
+            .clone()
+            .into_iter()
+            .filter(|&s| self.usable(s))
+            .filter(|s| self.resting.get(s).is_none_or(|&until| now >= until))
+            .collect();
+        order.dedup();
+        self.shuffle(&mut order);
+        if !order.contains(&SourceId::Favorites) {
+            order.push(SourceId::Favorites);
+        }
+        order
+    }
+
+    fn rest(&mut self, source: SourceId, e: &anyhow::Error) {
+        let secs = if net::is_rate_limited(e) {
+            RATE_LIMIT_REST_SECS
+        } else {
+            ERROR_REST_SECS
+        };
+        self.resting.insert(source, now() + secs);
+    }
+
+    /// Picks and downloads photos for these displays: one for all of them,
+    /// or one per display when `each` is set. Also returns notes on sources
+    /// that failed and were skipped.
+    fn fetch(&mut self, displays: &[Display], each: bool) -> Result<(Set, Vec<String>)> {
+        let shared = largest(displays).unwrap_or(FALLBACK_SIZE);
+        let targets: Vec<Option<Display>> = if each {
+            displays.iter().cloned().map(Some).collect()
+        } else {
+            vec![None]
+        };
+        let sizes: Vec<(u32, u32)> = targets
+            .iter()
+            .map(|t| t.as_ref().map_or(shared, |d| (d.width, d.height)))
+            .collect();
+        // Bigger displays choose first.
+        let mut order: Vec<usize> = (0..targets.len()).collect();
+        order.sort_by_key(|&i| std::cmp::Reverse(u64::from(sizes[i].0) * u64::from(sizes[i].1)));
+
+        // Don't show what's already on screen again.
+        let mut used: HashSet<String> = self
+            .state
+            .current
+            .iter()
+            .flat_map(|s| &s.photos)
+            .map(|w| w.id.clone())
+            .collect();
+        let mut notes = Vec::new();
+        let mut photos: Vec<Option<Wallpaper>> = vec![None; targets.len()];
+        for i in order {
+            let photo = self.photo_for(sizes[i], targets[i].clone(), &mut used, &mut notes)?;
+            photos[i] = Some(photo);
+        }
+        let mut set = Set {
+            photos: photos.into_iter().flatten().collect(),
+            spanned: None,
+        };
+        if each && wallpaper::SPANS_ONE_IMAGE {
+            set = self.stitch(set, displays)?;
+        }
+        Ok((set, notes))
+    }
+
+    /// One photo at `size`, from the first source that can give one.
+    fn photo_for(
+        &mut self,
+        size: (u32, u32),
+        display: Option<Display>,
+        used: &mut HashSet<String>,
+        notes: &mut Vec<String>,
+    ) -> Result<Wallpaper> {
+        let mut first_error = None;
+        for source in self.source_order() {
+            // Favorites fill in quietly when they weren't asked for.
+            let ticked = self.config.sources.contains(&source);
+            match self.photo_from(source, size, &display, used) {
+                Ok(photo) => return Ok(photo),
+                Err(e) => {
+                    self.log(&format!("{} skipped: {e:#}", source.name()));
+                    if ticked {
+                        self.rest(source, &e);
+                        let note = if net::is_rate_limited(&e) {
+                            format!("{} is rate-limited", source.name())
+                        } else {
+                            format!("{} failed", source.name())
+                        };
+                        if !notes.contains(&note) {
+                            notes.push(note);
+                        }
+                        first_error.get_or_insert(e);
+                    }
+                }
+            }
+        }
+        Err(first_error.unwrap_or_else(|| {
+            let wait = self
+                .resting
+                .values()
+                .min()
+                .map(|until| until.saturating_sub(now()).div_ceil(60))
+                .unwrap_or(0);
+            anyhow!("every photo source is resting after an error; trying again in {wait} min")
+        }))
+    }
+
+    /// The best-fitting queued photo from `source` (refilling the queue
+    /// when nothing fits well), downloaded at `size`.
+    fn photo_from(
+        &mut self,
+        source: SourceId,
+        (width, height): (u32, u32),
+        display: &Option<Display>,
+        used: &mut HashSet<String>,
+    ) -> Result<Wallpaper> {
+        let mut refilled = false;
+        let mut tries = 0;
+        loop {
+            let best = self.best_queued(source, (width, height), used);
+            if !refilled && best.is_none_or(|(_, cover)| cover < GOOD_ENOUGH) {
+                self.refill(source, (width, height))?;
+                refilled = true;
+                continue;
+            }
+            let Some((index, _)) = best else {
+                bail!("{} had no new photos", source.name());
+            };
+            let candidate = self
+                .state
+                .queue
+                .get_mut(&source)
+                .map(|q| q.remove(index))
+                .context("queue changed")?;
+            used.insert(candidate.id.clone());
+            let file = self
+                .paths
+                .images_dir
+                .join(format!("{}-{width}x{height}.jpg", safe_name(&candidate.id)));
+            match source::fetch_image(&self.http, &candidate, width, height, &file) {
+                Ok(()) => return Ok(wallpaper_from(candidate, file, display.clone())),
+                Err(e) => {
+                    tries += 1;
+                    self.log(&format!("skipped {}: {e:#}", candidate.id));
+                    if net::is_rate_limited(&e) || tries >= TRIES_PER_SOURCE {
+                        return Err(e);
+                    }
+                }
+            }
+        }
+    }
+
+    fn best_queued(
+        &self,
+        source: SourceId,
+        size: (u32, u32),
+        used: &HashSet<String>,
+    ) -> Option<(usize, f64)> {
+        let queue = self.state.queue.get(&source)?;
+        queue
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| !used.contains(&c.id))
+            .map(|(i, c)| (i, coverage((c.width, c.height), size)))
+            .fold(None, |best, (i, cover)| match best {
+                Some((_, b)) if b >= cover => best,
+                _ => Some((i, cover)),
+            })
+    }
+
+    /// Asks `source` for a new batch and queues the photos it didn't have.
+    fn refill(&mut self, source: SourceId, (width, height): (u32, u32)) -> Result<()> {
+        let query = self.config.query.clone();
+        let batch: Vec<Candidate> = match source {
+            SourceId::Unsplash => {
+                let key = self.config.effective_key();
+                let topics = self.topic_ids(&key)?;
+                unsplash::batch(&self.http, &key, &query, &topics)?
+            }
+            SourceId::Pexels => {
+                let key = self.config.effective_pexels_key();
+                let random = self.random();
+                let (batch, pages) =
+                    pexels::batch(&self.http, &key, &query, self.state.pexels_pages, random)?;
+                self.state.pexels_pages = Some(pages);
+                batch
+            }
+            SourceId::Wallhaven => wallhaven::batch(&self.http, &query, width, height)?,
+            SourceId::Daily => daily::batch(&self.http, now())?,
+            SourceId::Favorites => favorites::batch(&self.favorites_dir())?,
+        };
+        let mut fresh: Vec<Candidate> = {
+            let queued: HashSet<&str> = self
+                .state
+                .queue
+                .get(&source)
+                .into_iter()
+                .flatten()
+                .map(|c| c.id.as_str())
+                .collect();
+            batch
+                .into_iter()
+                .filter(|c| !queued.contains(c.id.as_str()))
+                .collect()
+        };
+        self.shuffle(&mut fresh);
+        let queue = self.state.queue.entry(source).or_default();
+        queue.extend(fresh);
+        let excess = queue.len().saturating_sub(QUEUE_LIMIT);
+        queue.drain(..excess);
+        self.save_state();
+        Ok(())
+    }
+
+    fn topic_ids(&mut self, key: &str) -> Result<Vec<String>> {
         if !self.config.query.trim().is_empty() {
             return Ok(Vec::new());
         }
@@ -448,7 +793,7 @@ impl Service {
             let id = match self.state.topic_ids.get(&topic) {
                 Some(id) => id.clone(),
                 None => {
-                    let id = client.topic_id(&topic)?;
+                    let id = unsplash::topic_id(&self.http, key, &topic)?;
                     self.state.topic_ids.insert(topic, id.clone());
                     id
                 }
@@ -456,47 +801,6 @@ impl Service {
             ids.push(id);
         }
         Ok(ids)
-    }
-
-    /// Picks random photos big enough for their displays (from one batch of
-    /// candidates) and downloads each cropped to its display's size: one
-    /// photo for all displays, or one per display when `each` is set.
-    fn fetch(&mut self, client: &Client, displays: &[Display], each: bool) -> Result<Set> {
-        let shared = largest(displays).unwrap_or(FALLBACK_SIZE);
-        let targets: Vec<Option<&Display>> = if each {
-            displays.iter().map(Some).collect()
-        } else {
-            vec![None]
-        };
-        let sizes: Vec<(u32, u32)> = targets
-            .iter()
-            .map(|t| t.map_or(shared, |d| (d.width, d.height)))
-            .collect();
-
-        let topics = self.topic_ids(client)?;
-        let count = targets.len() as u32 * CANDIDATES_PER_DISPLAY;
-        let photos = client.random_photos(&self.config.query, &topics, count)?;
-        let dims: Vec<(u32, u32)> = photos.iter().map(|p| (p.width, p.height)).collect();
-
-        let mut set = Set {
-            photos: Vec::new(),
-            spanned: None,
-        };
-        let choices = pick(&dims, &sizes);
-        for ((target, &(width, height)), choice) in targets.iter().zip(&sizes).zip(choices) {
-            let photo = &photos[choice];
-            let file = self
-                .paths
-                .images_dir
-                .join(format!("{}-{width}x{height}.jpg", safe_name(&photo.id)));
-            client.download(&unsplash::sized_url(&photo.urls.raw, width, height), &file)?;
-            set.photos
-                .push(wallpaper_from(photo.clone(), file, target.cloned()));
-        }
-        if each && wallpaper::SPANS_ONE_IMAGE {
-            set = self.stitch(set, displays)?;
-        }
-        Ok(set)
     }
 
     /// GNOME: stitches a set's photos into one image laid out like
@@ -546,15 +850,23 @@ impl Service {
             Some(i) => vec![set.photos.get(i).context("that wallpaper has changed")?],
             None => set.photos.iter().collect(),
         };
+        let photos: Vec<&Wallpaper> = photos
+            .into_iter()
+            .filter(|w| w.source != SourceId::Favorites)
+            .collect();
+        if photos.is_empty() {
+            return Ok("Already in your favorites".into());
+        }
         let dir = self.favorites_dir();
         fs::create_dir_all(&dir).with_context(|| format!("could not create {}", dir.display()))?;
         let mut saved = Vec::new();
         for photo in photos {
-            let dest = dir.join(format!(
-                "{} - {}.jpg",
-                safe_name(&photo.author),
-                safe_name(&photo.id)
-            ));
+            // Unsplash favorites keep the original "{author} - {id}" name.
+            let id = match photo.source {
+                SourceId::Unsplash => safe_name(&photo.id),
+                other => format!("{}-{}", other.key(), safe_name(&photo.id)),
+            };
+            let dest = dir.join(format!("{} - {id}.jpg", safe_name(&photo.author)));
             if !dest.exists() {
                 fs::copy(&photo.file, &dest).context("could not copy the wallpaper")?;
             }
@@ -582,14 +894,11 @@ impl Service {
         ) {
             Ok(report) => {
                 if report.removed_files > 0 {
-                    log::write(
-                        &self.paths.log_file,
-                        &format!(
-                            "cleanup removed {} files ({} KB)",
-                            report.removed_files,
-                            report.removed_bytes / 1024
-                        ),
-                    );
+                    self.log(&format!(
+                        "cleanup removed {} files ({} KB)",
+                        report.removed_files,
+                        report.removed_bytes / 1024
+                    ));
                 }
                 if report.dropped_next {
                     self.save_state();
@@ -600,18 +909,39 @@ impl Service {
     }
 }
 
-fn wallpaper_from(photo: Photo, file: PathBuf, display: Option<Display>) -> Wallpaper {
+/// "Unsplash is rate-limited, so this one is from Pexels."
+fn fallback_notice(notes: &[String], set: &Set) -> String {
+    let mut from: Vec<&str> = set
+        .photos
+        .iter()
+        .map(|w| provider(w.source, &w.id))
+        .collect();
+    from.dedup();
+    let these = if set.photos.len() > 1 {
+        "these are"
+    } else {
+        "this one is"
+    };
+    format!(
+        "{}, so {these} from {}",
+        notes.join(" and "),
+        from.join(" and ")
+    )
+}
+
+fn wallpaper_from(c: Candidate, file: PathBuf, display: Option<Display>) -> Wallpaper {
     Wallpaper {
-        id: photo.id,
+        id: c.id,
         file,
-        author: photo.user.name,
-        author_url: photo.user.links.html,
-        photo_url: photo.links.html,
-        preview_url: photo.urls.small,
-        location: photo.location.and_then(|l| l.label()),
-        description: photo.description.or(photo.alt_description),
-        download_location: photo.links.download_location,
-        color: photo.color,
+        author: c.author,
+        author_url: c.author_url,
+        photo_url: c.photo_url,
+        preview_url: c.preview_url,
+        location: c.location,
+        description: c.description,
+        download_location: c.track_url.unwrap_or_default(),
+        color: c.color,
+        source: c.source,
         display,
     }
 }
@@ -623,38 +953,15 @@ fn largest(displays: &[Display]) -> Option<(u32, u32)> {
     (width > 0 && height > 0).then_some((width, height))
 }
 
-/// Chooses a candidate photo (by index into `photos`) for each wanted size.
-/// Bigger displays choose first; each takes the unused photo that covers it
-/// best, so photos too small to fill a screen are a last resort. Photos are
-/// reused only if there are fewer than displays.
-fn pick(photos: &[(u32, u32)], sizes: &[(u32, u32)]) -> Vec<usize> {
-    let coverage = |photo: (u32, u32), size: (u32, u32)| {
-        let w = f64::from(photo.0) / f64::from(size.0.max(1));
-        let h = f64::from(photo.1) / f64::from(size.1.max(1));
-        w.min(h).min(1.0)
-    };
-    let mut order: Vec<usize> = (0..sizes.len()).collect();
-    order.sort_by_key(|&i| std::cmp::Reverse(u64::from(sizes[i].0) * u64::from(sizes[i].1)));
-    let mut used = vec![false; photos.len()];
-    let mut picks = vec![0; sizes.len()];
-    for i in order {
-        let best = |candidates: &mut dyn Iterator<Item = usize>| {
-            candidates.fold(None, |best: Option<usize>, j| match best {
-                Some(b) if coverage(photos[b], sizes[i]) >= coverage(photos[j], sizes[i]) => {
-                    Some(b)
-                }
-                _ => Some(j),
-            })
-        };
-        let choice = best(&mut (0..photos.len()).filter(|&j| !used[j]))
-            .or_else(|| best(&mut (0..photos.len())))
-            .unwrap_or(0);
-        if let Some(slot) = used.get_mut(choice) {
-            *slot = true;
-        }
-        picks[i] = choice;
+/// How much of a display a photo covers without upscaling, up to 1.0.
+/// Unknown sizes count as half.
+fn coverage(photo: (u32, u32), size: (u32, u32)) -> f64 {
+    if photo.0 == 0 || photo.1 == 0 {
+        return 0.5;
     }
-    picks
+    let w = f64::from(photo.0) / f64::from(size.0.max(1));
+    let h = f64::from(photo.1) / f64::from(size.1.max(1));
+    w.min(h).min(1.0)
 }
 
 /// Keeps file names portable: letters, digits, `-`, `_`, spaces and dots.
@@ -680,6 +987,8 @@ fn safe_name(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::source::tests::png;
+    use crate::source::Image;
     use std::path::Path;
     use std::sync::{Arc, Mutex};
 
@@ -725,6 +1034,7 @@ mod tests {
             description: None,
             download_location: "http://127.0.0.1:9/never".into(),
             color: None,
+            source: SourceId::Unsplash,
             display,
         }
     }
@@ -733,17 +1043,25 @@ mod tests {
         Set::single(photo(svc, id, None))
     }
 
+    fn favorites(svc: &Service, names: &[&str]) {
+        let dir = &svc.paths.default_favorites_dir;
+        fs::create_dir_all(dir).unwrap();
+        for name in names {
+            png(dir, name, 300, 200);
+        }
+    }
+
     #[test]
-    fn no_key_means_no_rotation() {
+    fn no_usable_source_means_no_rotation() {
         std::env::remove_var("UNSPLASH_ACCESS_KEY");
         let dir = tempfile::tempdir().unwrap();
         let (mut svc, applied) = service(dir.path());
         assert!(!svc.rotation_due());
         svc.handle(Command::Tick);
         assert!(applied.lock().unwrap().is_empty());
-        assert!(!svc.snapshot().has_key);
+        assert!(svc.snapshot().needs_setup);
         svc.handle(Command::Next);
-        assert!(svc.snapshot().error.unwrap().contains("access key"));
+        assert!(svc.snapshot().error.unwrap().contains("photo source"));
     }
 
     #[test]
@@ -769,6 +1087,91 @@ mod tests {
         );
         assert!(next.on_disk());
         assert!(State::load(&svc.paths.state_file).current.is_some());
+    }
+
+    #[test]
+    fn rotates_through_favorites_without_the_network() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut svc, applied) = service(dir.path());
+        svc.config.sources = vec![SourceId::Favorites];
+        favorites(&svc, &["Ann - a1.png", "Bo - pexels-2.png", "Cy - a3.png"]);
+        let originals: Vec<Vec<u8>> = fs::read_dir(&svc.paths.default_favorites_dir)
+            .unwrap()
+            .map(|e| fs::read(e.unwrap().path()).unwrap())
+            .collect();
+
+        let mut seen = HashSet::new();
+        for _ in 0..3 {
+            svc.state.next = None;
+            svc.rotate().unwrap();
+            let current = &svc.state.current.as_ref().unwrap().photos[0];
+            assert_eq!(image::image_dimensions(&current.file).unwrap(), (100, 100));
+            seen.insert(current.id.clone());
+        }
+        // A shuffle bag: three rotations show all three favorites.
+        assert_eq!(seen.len(), 3);
+        assert_eq!(applied.lock().unwrap().len(), 3);
+        let view = &svc.snapshot().current[0];
+        assert_eq!(view.source, "Favorites");
+        assert!(view.preview_file.is_some());
+        // The originals are untouched.
+        let after: Vec<Vec<u8>> = fs::read_dir(&svc.paths.default_favorites_dir)
+            .unwrap()
+            .map(|e| fs::read(e.unwrap().path()).unwrap())
+            .collect();
+        assert_eq!(after, originals);
+        assert_eq!(svc.favorite(Some(0)).unwrap(), "Already in your favorites");
+    }
+
+    #[test]
+    fn a_failing_source_rests_and_favorites_fill_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut svc, _) = service(dir.path());
+        svc.config.access_key = "test-key".into();
+        svc.config.sources = vec![SourceId::Unsplash];
+        favorites(&svc, &["Ann - a1.png"]);
+        // Queued Unsplash photos whose downloads fail (nothing listens on
+        // port 9), so no search request is made.
+        let broken = |id: &str| {
+            let mut c = source::tests::candidate(
+                SourceId::Unsplash,
+                id,
+                Image::Sized {
+                    url: "http://127.0.0.1:9/{w}x{h}.jpg".into(),
+                },
+            );
+            c.width = 4000;
+            c.height = 3000;
+            c
+        };
+        svc.state.queue.insert(
+            SourceId::Unsplash,
+            vec![broken("u1"), broken("u2"), broken("u3")],
+        );
+
+        svc.rotate().unwrap();
+
+        let current = &svc.state.current.as_ref().unwrap().photos[0];
+        assert_eq!(current.source, SourceId::Favorites);
+        assert!(svc.resting.contains_key(&SourceId::Unsplash));
+        assert_eq!(
+            svc.notice.as_deref(),
+            Some("Unsplash failed, so this one is from Favorites")
+        );
+        // Resting sources are skipped until they've rested.
+        assert_eq!(svc.source_order(), vec![SourceId::Favorites]);
+    }
+
+    #[test]
+    fn rate_limits_rest_longer_than_other_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut svc, _) = service(dir.path());
+        svc.rest(
+            SourceId::Pexels,
+            &anyhow::Error::from(net::RateLimited("Pexels")),
+        );
+        svc.rest(SourceId::Daily, &anyhow!("offline"));
+        assert!(svc.resting[&SourceId::Pexels] > svc.resting[&SourceId::Daily]);
     }
 
     #[test]
@@ -846,33 +1249,28 @@ mod tests {
     }
 
     #[test]
-    fn favorites_copy_outside_the_cache() {
+    fn favorites_copy_outside_the_cache_named_by_source() {
         let dir = tempfile::tempdir().unwrap();
         let (mut svc, _) = service(dir.path());
-        svc.state.current = Some(cached(&svc, "cur"));
+        let mut pexels = photo(&svc, "417074", None);
+        pexels.source = SourceId::Pexels;
+        svc.state.current = Some(Set {
+            photos: vec![photo(&svc, "cur", None), pexels],
+            spanned: None,
+        });
         svc.handle(Command::Favorite(Some(0)));
         let saved = dir.path().join("favorites").join("Ann _ Lee - cur.jpg");
         assert!(saved.exists());
         assert!(svc.snapshot().notice.unwrap().starts_with("Saved to"));
+        svc.handle(Command::Favorite(None));
+        assert!(svc.snapshot().notice.unwrap().starts_with("Saved 2 photos"));
+        assert!(dir
+            .path()
+            .join("favorites/Ann _ Lee - pexels-417074.jpg")
+            .exists());
         // Cleanup never touches favorites.
         svc.cleanup();
         assert!(saved.exists());
-    }
-
-    #[test]
-    fn favorites_can_save_every_display() {
-        let dir = tempfile::tempdir().unwrap();
-        let (mut svc, _) = service(dir.path());
-        svc.state.current = Some(Set {
-            photos: vec![
-                photo(&svc, "a", Some(screen("1", 1, 1))),
-                photo(&svc, "b", Some(screen("2", 1, 1))),
-            ],
-            spanned: None,
-        });
-        svc.handle(Command::Favorite(None));
-        assert!(svc.snapshot().notice.unwrap().starts_with("Saved 2 photos"));
-        assert!(dir.path().join("favorites/Ann _ Lee - b.jpg").exists());
         svc.handle(Command::Favorite(Some(5)));
         assert!(svc.snapshot().error.is_some());
     }
@@ -899,20 +1297,23 @@ mod tests {
     }
 
     #[test]
-    fn changing_the_search_or_per_display_drops_the_prefetched_photo() {
+    fn changing_the_sources_drops_prefetched_and_queued_photos() {
         let dir = tempfile::tempdir().unwrap();
         let (mut svc, _) = service(dir.path());
         for change in [
             |c: &mut Config| c.query = "mountains".into(),
             |c: &mut Config| c.per_display = !c.per_display,
+            |c: &mut Config| c.sources.push(SourceId::Wallhaven),
         ] {
             let next = cached(&svc, "next");
             svc.state.next = Some(next.clone());
+            svc.state.queue.insert(SourceId::Unsplash, Vec::new());
             let mut config = svc.config.clone();
             change(&mut config);
             config.save(&svc.paths.config_file).unwrap();
             svc.reload();
             assert!(svc.state.next.is_none());
+            assert!(svc.state.queue.is_empty());
             assert!(!next.on_disk());
         }
     }
@@ -928,25 +1329,38 @@ mod tests {
         settings.topics = " nature, ,film ".into();
         settings.cache_cap_mb = 1;
         settings.per_display = true;
-        settings.apply_to(&mut config, Some("  "));
+        settings.sources = vec![SourceId::Favorites, SourceId::Pexels, SourceId::Pexels];
+        settings.apply_to(&mut config, Some("  "), Some("px"));
         assert_eq!(config.topics, ["nature", "film"]);
         assert_eq!(config.cache_cap_mb, 20);
         assert_eq!(config.access_key, "old");
+        assert_eq!(config.pexels_key, "px");
         assert!(config.per_display);
-        settings.apply_to(&mut config, Some("new"));
+        assert_eq!(config.sources, [SourceId::Pexels, SourceId::Favorites]);
+        settings.apply_to(&mut config, Some("new"), None);
         assert_eq!(config.access_key, "new");
+        assert_eq!(config.pexels_key, "px");
     }
 
     #[test]
-    fn picks_photos_that_cover_each_display() {
-        let laptop = (3024, 1964);
+    fn coverage_prefers_photos_that_fill_the_display() {
         let monitor = (3840, 2160);
-        // The 4K photo goes to the 4K monitor, the next best to the laptop.
-        let photos = [(1920, 1080), (6000, 4000), (3200, 2000)];
-        assert_eq!(pick(&photos, &[laptop, monitor]), vec![2, 1]);
-        // Fewer photos than displays: the second display reuses one.
-        assert_eq!(pick(&[(6000, 4000)], &[laptop, monitor]), vec![0, 0]);
-        assert_eq!(pick(&photos, &[monitor]), vec![1]);
+        assert_eq!(coverage((6000, 4000), monitor), 1.0);
+        assert!((coverage((1920, 1080), monitor) - 0.5).abs() < 1e-9);
+        assert_eq!(coverage((0, 0), monitor), 0.5);
+    }
+
+    #[test]
+    fn notices_name_the_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let (svc, _) = service(dir.path());
+        let mut bing = photo(&svc, "bing-20261014-x", None);
+        bing.source = SourceId::Daily;
+        let set = Set::single(bing);
+        assert_eq!(
+            fallback_notice(&["Unsplash is rate-limited".into()], &set),
+            "Unsplash is rate-limited, so this one is from Bing"
+        );
     }
 
     #[test]

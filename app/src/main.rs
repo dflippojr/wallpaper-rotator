@@ -124,21 +124,29 @@ fn save_settings(
     state: State<'_, AppState>,
     settings: Settings,
     access_key: Option<String>,
+    pexels_key: Option<String>,
 ) -> Result<(), String> {
     let path = &state.paths.config_file;
     let mut config = Config::load_or_create(path).map_err(|e| format!("{e:#}"))?;
-    settings.apply_to(&mut config, access_key.as_deref());
+    settings.apply_to(&mut config, access_key.as_deref(), pexels_key.as_deref());
     config.save(path).map_err(|e| format!("{e:#}"))?;
     sync_autostart(&app, config.start_at_login);
     state.send(Command::Reload);
     Ok(())
 }
 
-/// Opens Unsplash links in the browser. Only unsplash.com, so the page can't
-/// be used to open anything else.
+/// Opens photo and credit links in the browser. Only the photo sources'
+/// sites, so the page can't be used to open anything else.
 #[tauri::command]
 fn open_link(app: AppHandle, url: String) -> Result<(), String> {
-    let allowed = ["https://unsplash.com/", "https://www.unsplash.com/"];
+    let allowed = [
+        "https://unsplash.com/",
+        "https://www.unsplash.com/",
+        "https://www.pexels.com/",
+        "https://wallhaven.cc/",
+        "https://www.bing.com/",
+        "https://commons.wikimedia.org/",
+    ];
     if !allowed.iter().any(|prefix| url.starts_with(prefix)) {
         return Err("only Unsplash links can be opened".into());
     }
@@ -420,6 +428,14 @@ fn main() {
             let (commands, _worker) = service.spawn();
 
             *snapshot.lock().unwrap() = first.clone();
+            // Favorites have no hosted preview; the popover shows the cached
+            // copy through the asset protocol, allowed for this folder only.
+            if let Err(e) = app
+                .asset_protocol_scope()
+                .allow_directory(&paths.images_dir, false)
+            {
+                log::write(&paths.log_file, &format!("could not allow previews: {e}"));
+            }
             app.manage(AppState {
                 commands: Mutex::new(commands),
                 snapshot,
@@ -436,7 +452,7 @@ fn main() {
             let _ = current_layout;
 
             // First run without a key: open the popover so setup is obvious.
-            if !first.has_key {
+            if first.needs_setup {
                 show_popover(&handle, None);
             }
             Ok(())

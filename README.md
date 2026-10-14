@@ -1,22 +1,41 @@
 # Wallpaper Rotator
 
-A tray app for macOS, Windows and Ubuntu GNOME that sets a new Unsplash photo as the desktop wallpaper on a schedule, and **never lets its image cache grow**.
+A tray app for macOS, Windows and Ubuntu GNOME that sets a new photo as the desktop wallpaper on a schedule, from Unsplash, Pexels, Wallhaven, Bing and Wikimedia Commons, or your own favorites, and **never lets its image cache grow**.
 
 Other rotators save every photo they cycle through. This one keeps only the wallpaper in use and the next one, downloaded ahead so "Next" is instant (one photo each, or one per display). Everything else in its cache folder is deleted after each rotation, and a hard size cap (200 MB by default) backs that up. Photos you want to keep go to a separate favorites folder that cleanup never touches.
 
 ## Features
 
 - Rotates hourly, every 6 hours, daily (default), weekly, or only on request.
-- Photos from an Unsplash search ("mountains") or topics (default: `wallpapers`).
-- Downloads each photo cropped to your screen's resolution instead of the multi-MB original.
+- Mixes photo sources, and fills in from the others when one is rate-limited or offline (see below).
+- One search ("mountains") for Unsplash, Pexels and Wallhaven, plus Unsplash topics (default: `wallpapers`).
+- Every photo is cropped to your screen's resolution instead of keeping the multi-MB original.
 - Optional different photo on each display, each sized for that display.
 - Tray popover: preview, location, next, save to favorites, photographer credit, settings.
 - Starts at login (release builds).
 
 ## Setup
 
-1. Create a free app at <https://unsplash.com/developers> and copy its **Access Key**. Demo mode allows 50 requests per hour, far more than a rotator uses.
-2. Run the app and paste the key in Settings (it opens on first run), or set `UNSPLASH_ACCESS_KEY`.
+Tick the photo sources you want in Settings (it opens on first run). Wallhaven, Photo of the day and My favorites work without a key. For the others:
+
+- **Unsplash:** create a free app at <https://unsplash.com/developers> and paste its **Access Key**, or set `UNSPLASH_ACCESS_KEY`. Demo keys allow 50 requests an hour; Unsplash raises that to 5,000 for free once you apply for production access on the app's page.
+- **Pexels:** get a free key at <https://www.pexels.com/api/> and paste it, or set `PEXELS_API_KEY`. About 200 requests an hour.
+
+## Photo sources
+
+| Source | Key | Limits | Notes |
+| --- | --- | --- | --- |
+| Unsplash | yes | 50/hour (demo) | Server-side crop. Each photo you get is reported to Unsplash, as its terms require. |
+| Pexels | yes | about 200/hour | Server-side crop. Random page of a search, or curated photos. |
+| Wallhaven | no | 45/minute | Only the general category, safe for work, landscape, at least your screen size. User uploads with unclear copyright: personal use. |
+| Photo of the day | no | | Bing's last 8 daily images (4K, licensed stock: personal use) and the last 5 days of Wikimedia Commons' Picture of the Day (free licenses, credited with the license). NASA's APOD feed is left out: in October 2026 it returned a NASA logo for every day. |
+| My favorites | no | none | Your `Wallpaper Favorites` folder, in shuffled order. Originals are never moved or changed. |
+
+How the mix works:
+- Each photo comes from a randomly picked ticked source.
+- Each source's answer is a batch (up to 30 for Unsplash), kept in a queue, so most rotations need no search request. Unsplash's required download report still counts.
+- A source that fails rests for 10 minutes, or 20 after a rate limit, and the popover says what filled in, for example "Unsplash is rate-limited, so this one is from Pexels".
+- If every ticked source is resting, your favorites fill in, even if they aren't ticked.
 
 ## Install
 
@@ -160,9 +179,10 @@ To build the installers by hand instead, use `scripts/build-release.sh linux|win
 
 | Piece | Where |
 | --- | --- |
-| Unsplash client (random photo, topic lookup, download tracking, sized downloads) | `crates/core/src/unsplash.rs` |
+| Photo sources (Unsplash, Pexels, Wallhaven, Bing + Commons, favorites) and cropping | `crates/core/src/source/` |
+| HTTP, downloads, rate-limit detection | `crates/core/src/net.rs` |
 | Cache rules: keep current + next, cap, never touch other files | `crates/core/src/store.rs` |
-| Rotation worker: schedule, prefetch, favorites, retries | `crates/core/src/service.rs` |
+| Rotation worker: schedule, prefetch, source mixing, queues, fallback, favorites | `crates/core/src/service.rs` |
 | Wallpaper setters: `IDesktopWallpaper` (Windows), `NSWorkspace` (macOS), `gsettings` (GNOME) | `crates/core/src/wallpaper/` |
 | Tray, popover window, commands | `app/src/main.rs`, `ui/` |
 
@@ -172,9 +192,12 @@ Files live in the platform folders (`wallpaper-rotator-cli paths` prints them): 
 
 - **macOS** sets wallpapers per Space. When you switch to a Space still showing an older photo from the cache, the app switches it to the current one.
 - **GNOME** has no click events for tray icons, so the tray icon opens a menu (Show, Next, Save to favorites, Pause, Quit). Ubuntu's AppIndicator extension, on by default, shows it. GNOME has a single wallpaper for all monitors, so with a photo per display the app stitches them into one image laid out like your monitors and sets it as "spanned".
-- **Per display:** one Unsplash request returns a batch of candidates; bigger displays pick first, each taking the photo that covers it best. When monitors come or go, the current photos are re-placed (a new display borrows one) and the next rotation fetches photos sized for the new layout.
+- **Per display:** bigger displays pick first, each taking the queued photo that covers it best (asking its source for a new batch when none fits well). When monitors come or go, the current photos are re-placed (a new display borrows one) and the next rotation fetches photos sized for the new layout.
 - **Windows** copies the wallpaper into its own cache, so deleting old files is always safe.
 
-### Unsplash API terms
+### API terms
 
-The app hotlinks Unsplash's preview image, calls each photo's `download_location` when it becomes your wallpaper, and credits the photographer and Unsplash with links.
+- **Unsplash:** the app hotlinks Unsplash's preview image, calls each photo's `download_location` when it becomes your wallpaper, and credits the photographer and Unsplash with links.
+- **Pexels:** credits the photographer and Pexels with links.
+- **Wikimedia Commons:** credits the author and license.
+- **Bing and Wallhaven:** these images are for personal use.

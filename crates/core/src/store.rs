@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Deserializer, Serialize};
 
+use crate::source::{Candidate, SourceId};
 use crate::wallpaper::{Display, Layout};
 
 /// A downloaded photo and the credit Unsplash asks apps to show.
@@ -19,8 +20,11 @@ pub struct Wallpaper {
     pub preview_url: String,
     pub location: Option<String>,
     pub description: Option<String>,
+    /// Unsplash's download-tracking URL; empty for other sources.
     pub download_location: String,
     pub color: Option<String>,
+    #[serde(default)]
+    pub source: SourceId,
     /// The display this photo was sized for; `None` means every display.
     #[serde(default)]
     pub display: Option<Display>,
@@ -104,6 +108,11 @@ pub struct State {
     pub last_rotated: u64,
     /// Topic slug to Unsplash topic ID.
     pub topic_ids: BTreeMap<String, String>,
+    /// Photos each source offered but that haven't been used yet, so most
+    /// rotations need no search request.
+    pub queue: BTreeMap<SourceId, Vec<Candidate>>,
+    /// How many result pages the last Pexels search had.
+    pub pexels_pages: Option<u64>,
 }
 
 impl State {
@@ -232,6 +241,7 @@ mod tests {
             description: None,
             download_location: String::new(),
             color: None,
+            source: SourceId::Unsplash,
             display: None,
         }
     }

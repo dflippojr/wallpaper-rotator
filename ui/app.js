@@ -1,6 +1,6 @@
 "use strict";
 
-const { invoke } = window.__TAURI__.core;
+const { invoke, convertFileSrc } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
 const $ = (id) => document.getElementById(id);
@@ -35,6 +35,12 @@ function renderDisplays(photos) {
   );
 }
 
+// Hosted previews where the source has one; the cached copy otherwise.
+function previewSrc(w) {
+  if (w.preview_url) return w.preview_url;
+  return w.preview_file ? convertFileSrc(w.preview_file) : "";
+}
+
 function render(s) {
   snapshot = s;
   if (shown >= s.current.length) shown = 0;
@@ -42,27 +48,33 @@ function render(s) {
   renderDisplays(s.current);
 
   if (w) {
-    if ($("preview").getAttribute("src") !== w.preview_url) $("preview").src = w.preview_url;
+    const src = previewSrc(w);
+    if ($("preview").getAttribute("src") !== src) $("preview").src = src;
     $("preview").alt = w.description || `Photo by ${w.author}`;
     $("photo").style.background = w.color || "";
     $("empty").hidden = true;
-    $("location").hidden = !w.location;
-    $("location-text").textContent = w.location || "";
+    // The location, or else the caption (Bing and Commons have no location).
+    const place = w.location || w.description;
+    $("location").hidden = !place;
+    $("location-text").textContent = place || "";
+    $("location").classList.toggle("caption", !w.location);
     $("credit").textContent = `By ${w.author}`;
     $("credit").dataset.url = w.author_url;
-    $("unsplash").dataset.url = w.photo_url;
+    $("source-link").textContent = w.source;
+    $("source-link").dataset.url = w.photo_url;
+    $("source-link").classList.toggle("plain", !w.photo_url);
   } else {
     $("preview").removeAttribute("src");
     $("photo").style.background = "";
     $("empty").hidden = false;
-    $("empty").textContent = s.has_key ? "Fetching your first wallpaper…" : "Add an Unsplash key in Settings";
+    $("empty").textContent = s.needs_setup ? "Pick a photo source in Settings" : "Fetching your first wallpaper…";
     $("location").hidden = true;
     $("credit").textContent = "";
-    $("unsplash").dataset.url = "https://unsplash.com/";
+    $("source-link").textContent = "";
   }
 
   $("btn-next").classList.toggle("spinning", s.busy);
-  $("btn-next").disabled = s.busy || !s.has_key;
+  $("btn-next").disabled = s.busy || s.needs_setup;
   // Until there is a photo, the empty-state text says what's happening.
   $("btn-next").hidden = !w;
   $("btn-favorite").disabled = !w;
@@ -77,10 +89,24 @@ function render(s) {
   else status.textContent = "";
 }
 
+const sourceBoxes = () => [...document.querySelectorAll("input[data-source]")];
+const ticked = (name) => sourceBoxes().some((b) => b.dataset.source === name && b.checked);
+
+// Key fields and Topics only show for the sources that use them.
+function syncSourceFields() {
+  $("unsplash-fields").hidden = !ticked("unsplash");
+  $("pexels-fields").hidden = !ticked("pexels");
+  $("topics-field").hidden = !ticked("unsplash");
+  $("search-field").hidden = !["unsplash", "pexels", "wallhaven"].some(ticked);
+}
+
 function openSettings() {
   const st = snapshot.settings;
+  for (const box of sourceBoxes()) box.checked = st.sources.includes(box.dataset.source);
   $("f-key").value = "";
-  $("f-key").placeholder = snapshot.has_key ? "Leave blank to keep the current key" : "Paste your Access Key";
+  $("f-key").placeholder = snapshot.has_unsplash_key ? "Leave blank to keep the current key" : "Paste your Access Key";
+  $("f-pexels").value = "";
+  $("f-pexels").placeholder = snapshot.has_pexels_key ? "Leave blank to keep the current key" : "Paste your API key";
   $("f-query").value = st.query;
   $("f-topics").value = st.topics;
   const interval = String(st.interval_minutes);
@@ -92,9 +118,12 @@ function openSettings() {
   $("f-paused").checked = st.paused;
   $("f-login").checked = st.start_at_login;
   $("f-each").checked = st.per_display;
+  $("settings-error").textContent = "";
+  syncSourceFields();
   $("view-main").hidden = true;
   $("view-settings").hidden = false;
-  (snapshot.has_key ? $("f-query") : $("f-key")).focus();
+  $("view-settings").scrollTop = 0;
+  sourceBoxes()[0].focus();
 }
 
 function closeSettings() {
@@ -105,6 +134,7 @@ function closeSettings() {
 async function saveSettings(event) {
   event.preventDefault();
   const settings = {
+    sources: sourceBoxes().filter((b) => b.checked).map((b) => b.dataset.source),
     query: $("f-query").value,
     topics: $("f-topics").value,
     interval_minutes: Number($("f-interval").value),
@@ -113,11 +143,19 @@ async function saveSettings(event) {
     start_at_login: $("f-login").checked,
     per_display: $("f-each").checked,
   };
+  if (settings.sources.length === 0) {
+    $("settings-error").textContent = "Tick at least one photo source.";
+    return;
+  }
   try {
-    await invoke("save_settings", { settings, accessKey: $("f-key").value || null });
+    await invoke("save_settings", {
+      settings,
+      accessKey: $("f-key").value || null,
+      pexelsKey: $("f-pexels").value || null,
+    });
     closeSettings();
   } catch (e) {
-    $("key-hint").textContent = String(e);
+    $("settings-error").textContent = String(e);
   }
 }
 
@@ -134,10 +172,13 @@ $("btn-settings").addEventListener("click", () => ($("view-settings").hidden ? o
 $("btn-cancel").addEventListener("click", closeSettings);
 $("btn-quit").addEventListener("click", () => invoke("quit"));
 $("view-settings").addEventListener("submit", saveSettings);
+for (const box of sourceBoxes()) box.addEventListener("change", syncSourceFields);
 $("credit").addEventListener("click", openLink);
-$("unsplash").addEventListener("click", openLink);
+$("source-link").addEventListener("click", openLink);
 $("dev-link").dataset.url = "https://unsplash.com/developers";
 $("dev-link").addEventListener("click", openLink);
+$("pexels-link").dataset.url = "https://www.pexels.com/api/";
+$("pexels-link").addEventListener("click", openLink);
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     if (!$("view-settings").hidden) closeSettings();
@@ -148,10 +189,10 @@ document.addEventListener("keydown", (e) => {
 listen("state", (e) => render(e.payload));
 listen("popover-shown", async () => {
   render(await invoke("get_state"));
-  if (!snapshot.has_key && $("view-settings").hidden) openSettings();
+  if (snapshot.needs_setup && $("view-settings").hidden) openSettings();
 });
 
 invoke("get_state").then((s) => {
   render(s);
-  if (!s.has_key) openSettings();
+  if (s.needs_setup) openSettings();
 });

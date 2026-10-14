@@ -7,10 +7,11 @@
 
 pub mod config;
 pub mod log;
+pub mod net;
 pub mod paths;
 pub mod service;
+pub mod source;
 pub mod store;
-pub mod unsplash;
 pub mod wallpaper;
 
 /// Seconds since the Unix epoch.
