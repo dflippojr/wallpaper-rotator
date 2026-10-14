@@ -1,6 +1,7 @@
 //! Headless control for testing and scripting:
 //!
-//!   wallpaper-rotator-cli rotate   set a new wallpaper now
+//!   wallpaper-rotator-cli rotate   set a new wallpaper now (ROTATOR_SIZE=WxH
+//!                                  sizes it where displays can't be listed)
 //!   wallpaper-rotator-cli status   show the current wallpaper and cache size
 //!   wallpaper-rotator-cli cleanup  enforce the cache rules
 //!   wallpaper-rotator-cli paths    show where files live
@@ -15,7 +16,7 @@ use rotator_core::config::Config;
 use rotator_core::paths::Paths;
 use rotator_core::service::{Command, Hooks, Service};
 use rotator_core::store::{self, State};
-use rotator_core::wallpaper;
+use rotator_core::wallpaper::{self, Display};
 
 fn main() -> Result<()> {
     let paths = Paths::discover()?;
@@ -49,10 +50,10 @@ fn main() -> Result<()> {
 fn rotate(paths: Paths) -> Result<()> {
     let hooks = Hooks {
         apply: Box::new(wallpaper::set),
-        screen_size: Box::new(|| {
-            let size = std::env::var("ROTATOR_SIZE").ok()?;
-            let (w, h) = size.split_once('x')?;
-            Some((w.parse().ok()?, h.parse().ok()?))
+        displays: Box::new(|| {
+            wallpaper::displays()
+                .or_else(size_from_env)
+                .unwrap_or_default()
         }),
         notify: Box::new(|_| {}),
     };
@@ -62,20 +63,52 @@ fn rotate(paths: Paths) -> Result<()> {
     if let Some(error) = snap.error {
         bail!(error);
     }
-    if let Some(w) = snap.current {
-        println!("set photo {} by {} ({})", w.id, w.author, w.photo_url);
+    for w in snap.current {
+        let place = w.display.map(|d| format!(" on {d}")).unwrap_or_default();
+        println!(
+            "set photo {} by {}{place} ({})",
+            w.id, w.author, w.photo_url
+        );
     }
     status(&paths)
 }
 
+fn size_from_env() -> Option<Vec<Display>> {
+    let size = std::env::var("ROTATOR_SIZE").ok()?;
+    let (w, h) = size.split_once('x')?;
+    Some(vec![Display {
+        id: "screen".into(),
+        name: "Screen".into(),
+        x: 0,
+        y: 0,
+        width: w.parse().ok()?,
+        height: h.parse().ok()?,
+    }])
+}
+
 fn status(paths: &Paths) -> Result<()> {
     let state = State::load(&paths.state_file);
+    let describe = |w: &store::Wallpaper| {
+        let place = w
+            .display
+            .as_ref()
+            .map(|d| format!(" on {}", d.name))
+            .unwrap_or_default();
+        format!("{} by {}{place}", w.id, w.author)
+    };
     match &state.current {
-        Some(w) => println!("current: {} by {} -> {}", w.id, w.author, w.file.display()),
+        Some(set) => {
+            for w in &set.photos {
+                println!("current: {} -> {}", describe(w), w.file.display());
+            }
+            if let Some(spanned) = &set.spanned {
+                println!("stitched: {}", spanned.display());
+            }
+        }
         None => println!("current: none"),
     }
-    if let Some(w) = &state.next {
-        println!("next:    {} by {}", w.id, w.author);
+    for w in state.next.iter().flat_map(|set| &set.photos) {
+        println!("next:    {}", describe(w));
     }
     let (count, bytes) = fs::read_dir(&paths.images_dir)
         .map(|entries| {

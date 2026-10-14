@@ -1,15 +1,16 @@
 // No console window on Windows release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use rotator_core::config::Config;
+use rotator_core::log;
 use rotator_core::paths::Paths;
 use rotator_core::service::{Command, Hooks, Service, Settings, Snapshot};
-use rotator_core::{log, wallpaper};
+use rotator_core::wallpaper::{self, Display, Layout};
 use tauri::image::Image;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -47,20 +48,56 @@ fn on_main<T: Send + 'static>(
     Ok(rx.recv_timeout(Duration::from_secs(30))?)
 }
 
-fn apply_wallpaper(app: &AppHandle, path: &Path) -> anyhow::Result<()> {
+fn apply_wallpaper(app: &AppHandle, layout: &Layout) -> anyhow::Result<()> {
     if wallpaper::NEEDS_MAIN_THREAD {
-        let path = path.to_path_buf();
-        on_main(app, move || wallpaper::set(&path))?
+        let layout = layout.clone();
+        on_main(app, move || wallpaper::set(&layout))?
     } else {
-        wallpaper::set(path)
+        wallpaper::set(layout)
     }
 }
 
-fn largest_screen(app: &AppHandle) -> Option<(u32, u32)> {
-    let monitors = app.available_monitors().ok()?;
-    let width = monitors.iter().map(|m| m.size().width).max()?;
-    let height = monitors.iter().map(|m| m.size().height).max()?;
-    (width > 0 && height > 0).then_some((width, height))
+/// The platform's own display list (macOS, Windows), or else the monitors
+/// the windowing toolkit reports (GNOME).
+fn displays(app: &AppHandle) -> Vec<Display> {
+    let native = if wallpaper::NEEDS_MAIN_THREAD {
+        on_main(app, wallpaper::displays).ok().flatten()
+    } else {
+        wallpaper::displays()
+    };
+    native.unwrap_or_else(|| toolkit_displays(app))
+}
+
+/// Monitors as GTK sees them. GNOME's spanned wallpaper stretches across
+/// the layout in logical pixels, so positions are logical, scaled up by the
+/// highest scale factor to keep HiDPI screens sharp.
+fn toolkit_displays(app: &AppHandle) -> Vec<Display> {
+    let monitors = app.available_monitors().unwrap_or_default();
+    let k = monitors
+        .iter()
+        .map(|m| m.scale_factor())
+        .fold(1.0, f64::max);
+    monitors
+        .iter()
+        .enumerate()
+        .map(|(i, m)| {
+            let s = m.scale_factor().max(0.1);
+            let px = |v: f64| (v / s * k).round();
+            let (x, y) = (px(m.position().x as f64), px(m.position().y as f64));
+            let name = m
+                .name()
+                .cloned()
+                .unwrap_or_else(|| format!("Display {}", i + 1));
+            Display {
+                id: format!("{name}@{x},{y}"),
+                name,
+                x: x as i32,
+                y: y as i32,
+                width: px(m.size().width as f64) as u32,
+                height: px(m.size().height as f64) as u32,
+            }
+        })
+        .collect()
 }
 
 // ---- Commands the popover calls ----
@@ -75,9 +112,10 @@ fn next_wallpaper(state: State<'_, AppState>) {
     state.send(Command::Next);
 }
 
+/// Saves the photo at `index` in the snapshot, or all current photos.
 #[tauri::command]
-fn favorite(state: State<'_, AppState>) {
-    state.send(Command::Favorite);
+fn favorite(state: State<'_, AppState>, index: Option<usize>) {
+    state.send(Command::Favorite(index));
 }
 
 #[tauri::command]
@@ -250,7 +288,7 @@ fn build_tray(app: &AppHandle, paused: bool) -> tauri::Result<()> {
             match event.id().as_ref() {
                 "show" => show_popover(app, None),
                 "next" => state.send(Command::Next),
-                "favorite" => state.send(Command::Favorite),
+                "favorite" => state.send(Command::Favorite(None)),
                 "pause" => {
                     let paused = pause_item.is_checked().unwrap_or(false);
                     state.send(Command::SetPaused(paused));
@@ -277,9 +315,21 @@ fn build_tray(app: &AppHandle, paused: bool) -> tauri::Result<()> {
 /// Keeps the tray tooltip and pause checkbox in step with the worker.
 fn refresh_tray(app: &AppHandle, snapshot: &Snapshot) {
     if let Some(tray) = app.tray_by_id("main") {
-        let tip = match &snapshot.current {
-            Some(w) => format!("Wallpaper Rotator\nPhoto by {} on Unsplash", w.author),
-            None => "Wallpaper Rotator".into(),
+        let tip = match snapshot.current.as_slice() {
+            [] => "Wallpaper Rotator".into(),
+            photos => {
+                let mut authors: Vec<&str> = photos.iter().map(|w| w.author.as_str()).collect();
+                authors.dedup();
+                let noun = if authors.len() == 1 {
+                    "Photo"
+                } else {
+                    "Photos"
+                };
+                format!(
+                    "Wallpaper Rotator\n{noun} by {} on Unsplash",
+                    authors.join(", ")
+                )
+            }
         };
         let _ = tray.set_tooltip(Some(tip));
     }
@@ -291,16 +341,16 @@ fn refresh_tray(app: &AppHandle, snapshot: &Snapshot) {
 }
 
 #[cfg(target_os = "macos")]
-fn watch_spaces(app: AppHandle, paths: Paths, current: Arc<Mutex<Option<PathBuf>>>) {
+fn watch_spaces(app: AppHandle, paths: Paths, current: Arc<Mutex<Option<Layout>>>) {
     // macOS sets wallpapers per Space. When the user switches to a Space that
-    // still shows an older (possibly deleted) photo, switch it to the current one.
+    // still shows older (possibly deleted) photos, switch it to the current ones.
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_secs(2));
-        let Some(file) = current.lock().unwrap().clone() else {
+        let Some(layout) = current.lock().unwrap().clone() else {
             continue;
         };
         let images = paths.images_dir.clone();
-        let _ = on_main(&app, move || wallpaper::reconcile(&file, &images));
+        let _ = on_main(&app, move || wallpaper::reconcile(&layout, &images));
     });
 }
 
@@ -338,21 +388,21 @@ fn main() {
 
             let handle = app.handle().clone();
             let snapshot = Arc::new(Mutex::new(Snapshot::default()));
-            let current_file: Arc<Mutex<Option<PathBuf>>> = Arc::new(Mutex::new(None));
+            let current_layout: Arc<Mutex<Option<Layout>>> = Arc::new(Mutex::new(None));
 
             let hooks = Hooks {
                 apply: {
                     let app = handle.clone();
-                    let current_file = current_file.clone();
-                    Box::new(move |path| {
-                        apply_wallpaper(&app, path)?;
-                        *current_file.lock().unwrap() = Some(path.to_path_buf());
+                    let current_layout = current_layout.clone();
+                    Box::new(move |layout| {
+                        apply_wallpaper(&app, layout)?;
+                        *current_layout.lock().unwrap() = Some(layout.clone());
                         Ok(())
                     })
                 },
-                screen_size: {
+                displays: {
                     let app = handle.clone();
-                    Box::new(move || largest_screen(&app))
+                    Box::new(move || displays(&app))
                 },
                 notify: {
                     let app = handle.clone();
@@ -365,7 +415,7 @@ fn main() {
                 },
             };
             let service = Service::new(paths.clone(), hooks)?;
-            *current_file.lock().unwrap() = service.current_file();
+            *current_layout.lock().unwrap() = service.current_layout();
             let first = service.snapshot();
             let (commands, _worker) = service.spawn();
 
@@ -381,9 +431,9 @@ fn main() {
             sync_autostart(&handle, first.settings.start_at_login);
 
             #[cfg(target_os = "macos")]
-            watch_spaces(handle.clone(), paths.clone(), current_file.clone());
+            watch_spaces(handle.clone(), paths.clone(), current_layout.clone());
             #[cfg(not(target_os = "macos"))]
-            let _ = current_file;
+            let _ = current_layout;
 
             // First run without a key: open the popover so setup is obvious.
             if !first.has_key {

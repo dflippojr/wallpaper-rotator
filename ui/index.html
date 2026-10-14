@@ -25,6 +25,7 @@
   <main id="view-main">
     <div class="photo" id="photo">
       <img id="preview" alt="">
+      <div class="displays" id="displays" role="group" aria-label="Displays" hidden></div>
       <div class="empty" id="empty">No wallpaper yet</div>
       <button id="btn-next" class="next" title="Next wallpaper" aria-label="Next wallpaper">
         <svg viewBox="0 0 24 24"><path d="M17.7 6.3A8 8 0 1 0 20 12h-2a6 6 0 1 1-1.8-4.2L13 11h7V4z" fill="currentColor"/></svg>
@@ -49,7 +50,7 @@
     <label>Unsplash access key
       <input id="f-key" type="password" autocomplete="off" placeholder="Leave blank to keep the current key">
     </label>
-    <p class="hint" id="key-hint">Get a free key at <a href="#" id="dev-link">unsplash.com/developers</a> (create an app, copy its Access Key).</p>
+    <p class="hint" id="key-hint">Free key: create an app at <a href="#" id="dev-link">unsplash.com/developers</a></p>
     <label>Search
       <input id="f-query" type="text" placeholder="e.g. mountains, ocean, city at night">
     </label>
@@ -70,6 +71,7 @@
         <input id="f-cap" type="number" min="20" step="10">
       </label>
     </div>
+    <label class="check"><input id="f-each" type="checkbox"> Different photo on each display</label>
     <div class="checks">
       <label class="check"><input id="f-paused" type="checkbox"> Pause rotation</label>
       <label class="check"><input id="f-login" type="checkbox"> Start at login</label>

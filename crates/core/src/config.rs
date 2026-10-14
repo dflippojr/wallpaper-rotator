@@ -24,6 +24,8 @@ pub struct Config {
     /// `<Pictures>/Wallpaper Favorites`.
     pub favorites_dir: Option<PathBuf>,
     pub start_at_login: bool,
+    /// A different photo on each display, each sized for it.
+    pub per_display: bool,
 }
 
 impl Default for Config {
@@ -37,6 +39,7 @@ impl Default for Config {
             cache_cap_mb: 200,
             favorites_dir: None,
             start_at_login: true,
+            per_display: false,
         }
     }
 }
@@ -75,9 +78,12 @@ impl Config {
         self.cache_cap_mb.max(20) * 1024 * 1024
     }
 
-    /// The photo source settings; prefetched photos are dropped when these change.
+    /// The settings that shape fetched photos; prefetched photos are dropped
+    /// when these change.
     pub fn same_source(&self, other: &Config) -> bool {
-        self.query.trim() == other.query.trim() && self.topics == other.topics
+        self.query.trim() == other.query.trim()
+            && self.topics == other.topics
+            && self.per_display == other.per_display
     }
 }
 

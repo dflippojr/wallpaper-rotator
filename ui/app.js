@@ -5,6 +5,8 @@ const { listen } = window.__TAURI__.event;
 
 const $ = (id) => document.getElementById(id);
 let snapshot = null;
+// Which display's photo the popover shows when each has its own.
+let shown = 0;
 
 function timeUntil(epochSeconds) {
   const minutes = Math.round((epochSeconds * 1000 - Date.now()) / 60000);
@@ -15,9 +17,29 @@ function timeUntil(epochSeconds) {
   return `in ${Math.round(hours / 24)} days`;
 }
 
+function renderDisplays(photos) {
+  const bar = $("displays");
+  bar.hidden = photos.length < 2;
+  bar.replaceChildren(
+    ...photos.map((photo, i) => {
+      const button = document.createElement("button");
+      button.textContent = photo.display || `Display ${i + 1}`;
+      button.title = `Show the photo on ${button.textContent}`;
+      button.setAttribute("aria-pressed", String(i === shown));
+      button.addEventListener("click", () => {
+        shown = i;
+        render(snapshot);
+      });
+      return button;
+    }),
+  );
+}
+
 function render(s) {
   snapshot = s;
-  const w = s.current;
+  if (shown >= s.current.length) shown = 0;
+  const w = s.current[shown];
+  renderDisplays(s.current);
 
   if (w) {
     if ($("preview").getAttribute("src") !== w.preview_url) $("preview").src = w.preview_url;
@@ -69,6 +91,7 @@ function openSettings() {
   $("f-cap").value = st.cache_cap_mb;
   $("f-paused").checked = st.paused;
   $("f-login").checked = st.start_at_login;
+  $("f-each").checked = st.per_display;
   $("view-main").hidden = true;
   $("view-settings").hidden = false;
   (snapshot.has_key ? $("f-query") : $("f-key")).focus();
@@ -88,6 +111,7 @@ async function saveSettings(event) {
     paused: $("f-paused").checked,
     cache_cap_mb: Math.max(20, Number($("f-cap").value) || 200),
     start_at_login: $("f-login").checked,
+    per_display: $("f-each").checked,
   };
   try {
     await invoke("save_settings", { settings, accessKey: $("f-key").value || null });
@@ -104,7 +128,7 @@ function openLink(event) {
 }
 
 $("btn-next").addEventListener("click", () => invoke("next_wallpaper"));
-$("btn-favorite").addEventListener("click", () => invoke("favorite"));
+$("btn-favorite").addEventListener("click", () => invoke("favorite", { index: shown }));
 $("btn-folder").addEventListener("click", () => invoke("open_favorites"));
 $("btn-settings").addEventListener("click", () => ($("view-settings").hidden ? openSettings() : closeSettings()));
 $("btn-cancel").addEventListener("click", closeSettings);

@@ -113,9 +113,17 @@ impl Client {
             .map_err(explain)
     }
 
-    /// A random landscape photo for a search query, or else from topics.
-    pub fn random_photo(&self, query: &str, topic_ids: &[String]) -> Result<Photo> {
-        let mut url = format!("{API}/photos/random?orientation=landscape&content_filter=high");
+    /// Up to `count` random landscape photos (at most 30) for a search query,
+    /// or else from topics. One API request however many come back.
+    pub fn random_photos(
+        &self,
+        query: &str,
+        topic_ids: &[String],
+        count: u32,
+    ) -> Result<Vec<Photo>> {
+        let count = count.clamp(1, 30);
+        let mut url =
+            format!("{API}/photos/random?orientation=landscape&content_filter=high&count={count}");
         let query = query.trim();
         if !query.is_empty() {
             url.push_str("&query=");
@@ -124,10 +132,15 @@ impl Client {
             url.push_str("&topics=");
             url.push_str(&encode_component(&topic_ids.join(",")));
         }
-        self.get(&url)?
+        let photos = self
+            .get(&url)?
             .body_mut()
-            .read_json::<Photo>()
-            .context("Unsplash sent a photo this app could not read")
+            .read_json::<Vec<Photo>>()
+            .context("Unsplash sent photos this app could not read")?;
+        if photos.is_empty() {
+            bail!("Unsplash found nothing for that search or topic");
+        }
+        Ok(photos)
     }
 
     /// Resolves a topic slug (or ID) to its ID.
@@ -239,6 +252,12 @@ mod tests {
             photo.location.unwrap().label().as_deref(),
             Some("Kirchsee, Germany")
         );
+    }
+
+    #[test]
+    fn parses_a_batch() {
+        let photos: Vec<Photo> = serde_json::from_str(&format!("[{SAMPLE},{SAMPLE}]")).unwrap();
+        assert_eq!(photos.len(), 2);
     }
 
     #[test]

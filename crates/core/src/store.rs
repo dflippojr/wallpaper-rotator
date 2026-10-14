@@ -3,7 +3,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+
+use crate::wallpaper::{Display, Layout};
 
 /// A downloaded photo and the credit Unsplash asks apps to show.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -19,15 +21,86 @@ pub struct Wallpaper {
     pub description: Option<String>,
     pub download_location: String,
     pub color: Option<String>,
+    /// The display this photo was sized for; `None` means every display.
+    #[serde(default)]
+    pub display: Option<Display>,
+}
+
+/// The photos on screen together: one for every display, or one per display.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Set {
+    pub photos: Vec<Wallpaper>,
+    /// GNOME: the per-display photos stitched into one image.
+    #[serde(default)]
+    pub spanned: Option<PathBuf>,
+}
+
+impl Set {
+    pub fn single(photo: Wallpaper) -> Self {
+        Self {
+            photos: vec![photo],
+            spanned: None,
+        }
+    }
+
+    pub fn files(&self) -> impl Iterator<Item = &Path> {
+        self.photos
+            .iter()
+            .map(|w| w.file.as_path())
+            .chain(self.spanned.as_deref())
+    }
+
+    /// Whether every file is still on disk (the OS may purge caches).
+    pub fn on_disk(&self) -> bool {
+        self.files().all(Path::exists)
+    }
+
+    pub fn layout(&self) -> Layout {
+        if let Some(spanned) = &self.spanned {
+            return Layout::Spanned(spanned.clone());
+        }
+        match self.photos.as_slice() {
+            [only] if only.display.is_none() => Layout::Same(only.file.clone()),
+            photos => Layout::Each(
+                photos
+                    .iter()
+                    .map(|w| {
+                        let id = w.display.as_ref().map(|d| d.id.clone());
+                        (id.unwrap_or_default(), w.file.clone())
+                    })
+                    .collect(),
+            ),
+        }
+    }
+
+    /// Whether this set was chosen for these displays: one shared photo when
+    /// `each` is off, or exactly one photo per display (same size and place)
+    /// when it is on.
+    pub fn fits(&self, displays: &[Display], each: bool) -> bool {
+        if !each {
+            return matches!(self.photos.as_slice(), [only] if only.display.is_none());
+        }
+        let mut ours: Vec<&Display> = self
+            .photos
+            .iter()
+            .filter_map(|w| w.display.as_ref())
+            .collect();
+        let mut live: Vec<&Display> = displays.iter().collect();
+        ours.sort_by(|a, b| a.id.cmp(&b.id));
+        live.sort_by(|a, b| a.id.cmp(&b.id));
+        ours.len() == self.photos.len() && ours == live
+    }
 }
 
 /// What the app remembers between runs.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct State {
-    pub current: Option<Wallpaper>,
+    #[serde(deserialize_with = "set_or_photo")]
+    pub current: Option<Set>,
     /// Downloaded ahead of time so "Next" is instant.
-    pub next: Option<Wallpaper>,
+    #[serde(deserialize_with = "set_or_photo")]
+    pub next: Option<Set>,
     pub last_rotated: u64,
     /// Topic slug to Unsplash topic ID.
     pub topic_ids: BTreeMap<String, String>,
@@ -46,6 +119,20 @@ impl State {
     pub fn save(&self, path: &Path) -> Result<()> {
         write_atomic(path, &serde_json::to_vec_pretty(self)?)
     }
+}
+
+/// Reads a set, or a single photo as saved by version 0.1.
+fn set_or_photo<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Set>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Saved {
+        Set(Set),
+        Photo(Box<Wallpaper>),
+    }
+    Ok(Option::<Saved>::deserialize(d)?.map(|saved| match saved {
+        Saved::Set(set) => set,
+        Saved::Photo(photo) => Set::single(*photo),
+    }))
 }
 
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -74,15 +161,16 @@ pub struct CleanupReport {
     pub dropped_next: bool,
 }
 
-/// Deletes every image except the current and prefetched wallpapers, then
-/// drops the prefetched one too if the cache is still over `cap_bytes`.
-/// The current wallpaper is never deleted.
+/// Deletes every image except the current and prefetched sets, then drops
+/// the prefetched set too if the cache is still over `cap_bytes`. The
+/// current set is never deleted.
 pub fn cleanup(images_dir: &Path, state: &mut State, cap_bytes: u64) -> Result<CleanupReport> {
     let mut report = CleanupReport::default();
     let keep: HashSet<PathBuf> = [&state.current, &state.next]
         .into_iter()
         .flatten()
-        .map(|w| w.file.clone())
+        .flat_map(Set::files)
+        .map(Path::to_path_buf)
         .collect();
 
     let entries = match fs::read_dir(images_dir) {
@@ -104,18 +192,21 @@ pub fn cleanup(images_dir: &Path, state: &mut State, cap_bytes: u64) -> Result<C
         }
     }
 
-    let size_of = |w: &Option<Wallpaper>| {
-        w.as_ref()
-            .and_then(|w| fs::metadata(&w.file).ok())
+    let size_of = |set: &Option<Set>| -> u64 {
+        set.iter()
+            .flat_map(Set::files)
+            .filter_map(|f| fs::metadata(f).ok())
             .map(|m| m.len())
-            .unwrap_or(0)
+            .sum()
     };
     if size_of(&state.current) + size_of(&state.next) > cap_bytes {
         if let Some(next) = state.next.take() {
-            let size = size_of(&Some(next.clone()));
-            if fs::remove_file(&next.file).is_ok() {
-                report.removed_files += 1;
-                report.removed_bytes += size;
+            for file in next.files() {
+                let size = fs::metadata(file).map(|m| m.len()).unwrap_or(0);
+                if fs::remove_file(file).is_ok() {
+                    report.removed_files += 1;
+                    report.removed_bytes += size;
+                }
             }
             report.dropped_next = true;
         }
@@ -141,7 +232,12 @@ mod tests {
             description: None,
             download_location: String::new(),
             color: None,
+            display: None,
         }
+    }
+
+    fn one(dir: &Path, id: &str, bytes: usize) -> Option<Set> {
+        Some(Set::single(wallpaper(dir, id, bytes)))
     }
 
     #[test]
@@ -149,8 +245,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let images = dir.path();
         let mut state = State {
-            current: Some(wallpaper(images, "cur", 10)),
-            next: Some(wallpaper(images, "nxt", 10)),
+            current: one(images, "cur", 10),
+            next: one(images, "nxt", 10),
             ..State::default()
         };
         for old in ["a", "b", "c"] {
@@ -184,8 +280,8 @@ mod tests {
     fn over_cap_drops_next_but_never_current() {
         let dir = tempfile::tempdir().unwrap();
         let mut state = State {
-            current: Some(wallpaper(dir.path(), "cur", 600)),
-            next: Some(wallpaper(dir.path(), "nxt", 600)),
+            current: one(dir.path(), "cur", 600),
+            next: one(dir.path(), "nxt", 600),
             ..State::default()
         };
         let report = cleanup(dir.path(), &mut state, 1000).unwrap();
@@ -212,7 +308,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.json");
         let state = State {
-            current: Some(wallpaper(dir.path(), "cur", 1)),
+            current: one(dir.path(), "cur", 1),
             last_rotated: 42,
             ..State::default()
         };
@@ -220,5 +316,64 @@ mod tests {
         assert_eq!(State::load(&path), state);
         fs::write(&path, b"{not json").unwrap();
         assert_eq!(State::load(&path), State::default());
+    }
+
+    fn display(id: &str, width: u32) -> Display {
+        Display {
+            id: id.into(),
+            name: id.into(),
+            x: 0,
+            y: 0,
+            width,
+            height: 1000,
+        }
+    }
+
+    #[test]
+    fn per_display_sets_keep_every_file_and_match_their_displays() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = wallpaper(dir.path(), "a", 10);
+        a.display = Some(display("1", 2000));
+        let mut b = wallpaper(dir.path(), "b", 10);
+        b.display = Some(display("2", 3000));
+        let spanned = dir.path().join("span-a.jpg");
+        fs::write(&spanned, b"x").unwrap();
+        let set = Set {
+            photos: vec![a, b],
+            spanned: Some(spanned.clone()),
+        };
+        let mut state = State {
+            current: Some(set.clone()),
+            ..State::default()
+        };
+        wallpaper(dir.path(), "old", 10);
+        let report = cleanup(dir.path(), &mut state, u64::MAX).unwrap();
+        assert_eq!(report.removed_files, 1);
+        assert!(set.on_disk());
+        assert_eq!(set.layout(), Layout::Spanned(spanned));
+
+        let live = [display("2", 3000), display("1", 2000)];
+        assert!(set.fits(&live, true));
+        assert!(!set.fits(&live, false));
+        assert!(!set.fits(&live[..1], true));
+        assert!(!set.fits(&[display("1", 2000), display("2", 1280)], true));
+        let single = Set::single(wallpaper(dir.path(), "s", 1));
+        assert!(single.fits(&live, false));
+        assert!(!single.fits(&live, true));
+    }
+
+    #[test]
+    fn reads_state_saved_by_version_0_1() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let old = r#"{"current": {"id": "x", "file": "/c/x.jpg", "author": "A",
+            "author_url": "", "photo_url": "", "preview_url": "", "location": null,
+            "description": null, "download_location": "", "color": null},
+            "next": null, "last_rotated": 7, "topic_ids": {}}"#;
+        fs::write(&path, old).unwrap();
+        let state = State::load(&path);
+        assert_eq!(state.last_rotated, 7);
+        let current = state.current.unwrap();
+        assert_eq!(current.layout(), Layout::Same("/c/x.jpg".into()));
     }
 }

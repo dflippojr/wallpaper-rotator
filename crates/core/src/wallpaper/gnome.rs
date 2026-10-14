@@ -3,14 +3,23 @@ use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 
+use super::Layout;
+
 const SCHEMA: &str = "org.gnome.desktop.background";
 
-pub fn set(path: &Path) -> Result<()> {
-    let uri = file_uri(path);
+pub fn set(layout: &Layout) -> Result<()> {
+    let (file, option) = match layout {
+        // Zoom covers each monitor, cropping the overflow.
+        Layout::Same(file) => (file, "zoom"),
+        // Spanned stretches one image across the whole monitor layout.
+        Layout::Spanned(file) => (file, "spanned"),
+        Layout::Each(_) => bail!("GNOME needs per-display photos stitched into one image"),
+    };
+    let uri = file_uri(file);
     gsettings("picture-uri", &uri)?;
     // Older GNOME releases have no dark-mode key; that's fine.
     let _ = gsettings("picture-uri-dark", &uri);
-    gsettings("picture-options", "zoom")
+    gsettings("picture-options", option)
 }
 
 fn gsettings(key: &str, value: &str) -> Result<()> {

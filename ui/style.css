@@ -47,7 +47,7 @@ nav { display: flex; gap: 6px; }
 
 .photo {
   position: relative;
-  height: 262px;
+  height: 274px;
   background: var(--panel);
   overflow: hidden;
 }
@@ -76,6 +76,27 @@ nav { display: flex; gap: 6px; }
 .next.spinning svg { animation: spin 0.9s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .next.spinning svg { animation: none; opacity: 0.5; } }
+
+.displays {
+  position: absolute;
+  top: 10px; left: 10px; right: 10px;
+  display: flex; gap: 6px;
+  overflow: hidden;
+}
+.displays button {
+  max-width: 150px;
+  padding: 3px 9px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(30, 30, 32, 0.6);
+  color: #ddd;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  backdrop-filter: blur(6px);
+}
+.displays button:hover, .displays button:focus-visible { background: rgba(30, 30, 32, 0.85); color: #fff; }
+.displays button[aria-pressed=true] { background: rgba(245, 245, 247, 0.92); color: #1d1d1f; }
 
 .location {
   position: absolute;
@@ -136,13 +157,14 @@ input[type=text], input[type=password], input[type=number], select {
 input:focus, select:focus { outline: 2px solid #7a7a82; outline-offset: 0; }
 .row { display: flex; gap: 10px; }
 .row label { flex: 1; }
-.checks { display: flex; gap: 16px; margin: 2px 0 6px; }
+.checks { display: flex; gap: 16px; margin: 0 0 4px; }
+form > .check { margin: 0 0 6px; }
 .check { display: flex; align-items: center; gap: 6px; color: var(--text); font-size: 13px; }
-.hint { margin: -2px 0 8px; color: var(--muted); font-size: 11px; }
+.hint { margin: -3px 0 7px; color: var(--muted); font-size: 11px; }
 .hint a { text-decoration: underline; }
 .muted { color: #808086; }
 .actions { display: flex; gap: 8px; margin-top: 6px; }
 .actions button { flex: 1; margin: 0; width: auto; padding: 9px; border-radius: var(--radius); border: 0; background: var(--panel); }
 .actions .primary { background: var(--accent); }
-.link { display: block; margin: 10px auto 0; background: none; border: 0; color: var(--muted); font-size: 12px; }
+.link { display: block; margin: 6px auto 0; background: none; border: 0; color: var(--muted); font-size: 12px; }
 .link:hover { color: var(--text); text-decoration: underline; }
