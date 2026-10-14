@@ -95,7 +95,7 @@ impl Client {
         }
         let agent = ureq::Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(120)))
-            .user_agent("wallpaper-rotator/0.1")
+            .user_agent("wallpaper-rotator/0.2")
             .build()
             .new_agent();
         Ok(Self {

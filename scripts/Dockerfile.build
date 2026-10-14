@@ -1,0 +1,16 @@
+# Release build environment: Ubuntu 24.04 with the Tauri Linux libraries,
+# plus what Tauri needs to cross-build the Windows NSIS installer.
+FROM ubuntu:24.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential curl ca-certificates git pkg-config file xdg-utils \
+      libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev libxdo-dev \
+      nsis lld llvm clang \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal \
+      -t x86_64-pc-windows-msvc
+ENV PATH=/root/.cargo/bin:$PATH
+RUN cargo install --locked tauri-cli --version "^2" && cargo install --locked cargo-xwin
+# The AppImage tooling is itself an AppImage; there is no FUSE in a container.
+ENV APPIMAGE_EXTRACT_AND_RUN=1
+WORKDIR /src
