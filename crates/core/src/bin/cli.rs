@@ -4,6 +4,7 @@
 //!                                  sizes it where displays can't be listed)
 //!   wallpaper-rotator-cli status   show the current wallpaper and cache size
 //!   wallpaper-rotator-cli cleanup  enforce the cache rules
+//!   wallpaper-rotator-cli displays list displays and the photo size for each
 //!   wallpaper-rotator-cli paths    show where files live
 //!
 //! Don't run `rotate` while the tray app is running; both would manage the
@@ -35,6 +36,18 @@ fn main() -> Result<()> {
             );
             Ok(())
         }
+        Some("displays") => {
+            let Some(displays) = wallpaper::displays() else {
+                bail!("this platform lists displays only from the tray app");
+            };
+            for d in displays {
+                println!(
+                    "{}: {}x{} at {},{} (id {})",
+                    d.name, d.width, d.height, d.x, d.y, d.id
+                );
+            }
+            Ok(())
+        }
         Some("paths") => {
             println!("config:    {}", paths.config_file.display());
             println!("state:     {}", paths.state_file.display());
@@ -43,7 +56,7 @@ fn main() -> Result<()> {
             println!("favorites: {}", paths.default_favorites_dir.display());
             Ok(())
         }
-        _ => bail!("usage: wallpaper-rotator-cli <rotate|status|cleanup|paths>"),
+        _ => bail!("usage: wallpaper-rotator-cli <rotate|status|cleanup|displays|paths>"),
     }
 }
 
