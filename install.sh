@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
-# Installs or updates Wallpaper Rotator on macOS or Linux (Ubuntu GNOME).
+# Installs, updates or uninstalls Wallpaper Rotator on macOS or Linux
+# (Ubuntu GNOME).
 #
 #   curl -fsSL https://raw.githubusercontent.com/dflippojr/wallpaper-rotator/main/install.sh | bash
 #   wget -qO- https://raw.githubusercontent.com/dflippojr/wallpaper-rotator/main/install.sh | bash
 #
 # Options go after `bash -s --`, or after the file name when run from a clone:
 #   bash install.sh [--dry-run] [--verbose] [--from-source] [--force] [--version vX.Y.Z]
+#   bash install.sh --uninstall [--purge]
 #
 # It checks the machine and what is already installed, installs only the
-# missing pieces, then installs the latest release: the .dmg on Apple
-# silicon Macs, the .deb on Ubuntu/Debian, the AppImage on other x86_64
-# Linux. When no prebuilt file fits (an Intel Mac, ARM Linux, an older
-# glibc) or with --from-source, it builds from source instead.
+# missing pieces, then installs the latest release: the universal .dmg on
+# Macs, the .deb on Ubuntu/Debian (22.04 or later, x86_64 or arm64), the
+# AppImage on other x86_64 Linux. Only when no prebuilt file fits (an older
+# glibc, ARM Linux without apt) or with --from-source does it build here.
 #
 #   --dry-run      only report what it finds and what it would do
 #   --verbose      print every check and command instead of a progress bar
@@ -20,6 +22,9 @@
 #   --force        reinstall even if this version is installed; continue
 #                  on a desktop other than GNOME
 #   --version      install a specific release tag instead of the latest
+#   --uninstall    remove the app, its start-at-login entry and its cache;
+#                  settings stay unless --purge is given too, and the
+#                  favorites folder is never touched
 #
 # Run it again any time to update.
 
@@ -31,22 +36,26 @@ set -euo pipefail
 
 REPO=dflippojr/wallpaper-rotator
 APP_NAME="Wallpaper Rotator"
-# The release's .deb and AppImage are built on Ubuntu 24.04 and need this glibc.
-BUILT_GLIBC=2.39
+# The release's Linux packages are built on Ubuntu 22.04 and need this glibc.
+BUILT_GLIBC=2.35
 
-DRY_RUN=0 VERBOSE=0 FROM_SOURCE=0 FORCE=0 TAG="" PKG=""
+DRY_RUN=0 VERBOSE=0 FROM_SOURCE=0 FORCE=0 UNINSTALL=0 PURGE=0 TAG="" PKG=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY_RUN=1 ;;
     --verbose) VERBOSE=1 ;;
     --from-source) FROM_SOURCE=1 ;;
     --force) FORCE=1 ;;
+    --uninstall) UNINSTALL=1 ;;
+    --purge) PURGE=1 ;;
     --version) TAG="${2:?--version needs a tag}"; shift ;;
-    -h|--help) echo "options: --dry-run --verbose --from-source --force --version vX.Y.Z (details at the top of install.sh)"; exit 0 ;;
+    -h|--help) echo "options: --dry-run --verbose --from-source --force --version vX.Y.Z --uninstall --purge (details at the top of install.sh)"; exit 0 ;;
     *) echo "unknown option: $1 (try --help)" >&2; exit 2 ;;
   esac
   shift
 done
+[ "$PURGE" = 0 ] || [ "$UNINSTALL" = 1 ] || { echo "--purge goes with --uninstall" >&2; exit 2; }
+if [ "$UNINSTALL" = 1 ]; then VERB="Uninstalling"; else VERB="Installing"; fi
 
 TMP=$(mktemp -d)
 LOG="${TMPDIR:-/tmp}/wallpaper-rotator-install.log"
@@ -70,7 +79,7 @@ esac
 on_exit() {
   status=$?
   if [ "$status" != 0 ] && [ "$PROGRESS" = 1 ] && [ ! -e "$TMP/died" ]; then
-    printf '\r\033[K%s The install stopped. The last lines of its log:\n' "$CROSS" >&3
+    printf '\r\033[K%s It stopped. The last lines of its log:\n' "$CROSS" >&3
     tail -n 8 "$LOG" | sed 's/^/  /' >&3
     printf '  Full log: %s\n' "$LOG" >&3
   fi
@@ -107,10 +116,8 @@ draw() {
 progress() { PCT=$1 LABEL=$2; say "$2"; draw; }
 # show MESSAGE: a line for the user, on the terminal either way.
 show() {
-  if [ "$PROGRESS" = 1 ]; then printf '%s
-' "$*" >&3; fi
-  printf '%s
-' "$*" >&2
+  if [ "$PROGRESS" = 1 ]; then printf '%s\n' "$*" >&3; fi
+  printf '%s\n' "$*" >&2
 }
 # tell MESSAGE: like show, above a progress bar that keeps going.
 tell() {
@@ -140,7 +147,7 @@ run() {
 # busy LABEL FROM TO CMD...: runs a slow command while the bar creeps from
 # FROM toward TO and the label counts seconds.
 busy() {
-  local label=$1 from=$2 to=$3 pid start step
+  local label=$1 from=$2 to=$3 pid start step status=0
   shift 3
   if [ "$PROGRESS" = 0 ] || [ "$DRY_RUN" = 1 ]; then
     [ "$DRY_RUN" = 1 ] || say "$label"
@@ -161,8 +168,10 @@ busy() {
     [ "$step" -ge 1 ] || step=1
     [ $((PCT + step)) -lt "$to" ] && PCT=$((PCT + step))
   done
-  wait "$pid"
+  wait "$pid" || status=$?
   PCT=$to
+  # The command's own status, so callers (and set -e) see failures.
+  return "$status"
 }
 # sudo asks for a password on the terminal; do that before the bar is drawn
 # over it, and again if a long build outlasted sudo's timeout.
@@ -170,15 +179,23 @@ sudo_ready() {
   [ "$DRY_RUN" = 0 ] || return 0
   sudo -n true 2>/dev/null && return 0
   clear_bar
-  [ "$PROGRESS" = 1 ] && printf 'The installer uses apt, so sudo needs your password.\n' >&3
-  if [ -r /dev/tty ]; then sudo -v </dev/tty; else sudo -v; fi || die "sudo is needed to install with apt"
+  [ "$PROGRESS" = 1 ] && printf 'This uses apt, so sudo needs your password.\n' >&3
+  if [ -r /dev/tty ]; then sudo -v </dev/tty; else sudo -v; fi || die "sudo is needed for apt"
   draw
 }
 # Sorts version numbers; true if $1 >= $2.
 # (sed -n 1p rather than head, which can cut the pipe and trip pipefail.)
 version_ge() { [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | sed -n 1p)" = "$2" ]; }
 
-[ "$PROGRESS" = 0 ] || printf '%sInstalling %s%s\n' "$B" "Wallpaper Rotator" "$N" >&3
+[ "$PROGRESS" = 0 ] || printf '%s%s %s%s\n' "$B" "$VERB" "$APP_NAME" "$N" >&3
+
+# Where things live (the app's paths come from the `directories` crate and
+# Tauri's identifier).
+LOCAL_BIN="$HOME/.local/bin"
+LOCAL_SHARE="$HOME/.local/share"
+VERSION_FILE="$LOCAL_SHARE/wallpaper-rotator/version"
+DESKTOP_FILE="$LOCAL_SHARE/applications/wallpaper-rotator.desktop"
+ICON_FILE="$LOCAL_SHARE/icons/hicolor/128x128/apps/wallpaper-rotator.png"
 
 # ---------------------------------------------------------------- detect --
 
@@ -188,52 +205,52 @@ case "$OS" in
   Darwin)
     PLATFORM=macos
     note "macOS $(sw_vers -productVersion) on $ARCH"
-    version_ge "$(sw_vers -productVersion)" 11.0 || die "needs macOS 11 or later"
-    if [ "$ARCH" != arm64 ]; then
-      say "No prebuilt app for Intel Macs; building from source"
-      FROM_SOURCE=1
-    fi
+    [ "$UNINSTALL" = 1 ] || version_ge "$(sw_vers -productVersion)" 11.0 || die "needs macOS 11 or later"
     ;;
   Linux)
     PLATFORM=linux
-    # WSL's own markers. The kernel name alone isn't enough: Docker Desktop
-    # containers also run on the WSL kernel.
-    if [ -n "${WSL_DISTRO_NAME:-}${WSL_INTEROP:-}" ] || [ -d /mnt/wsl ] \
-       || ls /proc/sys/fs/binfmt_misc/WSLInterop* >/dev/null 2>&1; then
-      die "this is WSL. Linux here has no desktop of its own, so the app can't set a wallpaper. Install it on Windows instead: see install.ps1 in the README."
-    fi
-    distro=$( (. /etc/os-release 2>/dev/null && echo "${PRETTY_NAME:-Linux}") || echo Linux)
-    # sed reads all of ldd's output; `head` would cut the pipe and, with
-    # pipefail, turn a good answer into a failure.
-    glibc=$(ldd --version 2>/dev/null | sed -n '1s/.* \([0-9][0-9]*\.[0-9][0-9]*\)$/\1/p')
-    glibc=${glibc:-0}
-    note "$distro on $ARCH, glibc $glibc, desktop: ${XDG_CURRENT_DESKTOP:-unknown}"
-    if [ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
-      warn "no graphical session found (DISPLAY and WAYLAND_DISPLAY are unset). Run this from a terminal on the desktop."
-    fi
-    case "${XDG_CURRENT_DESKTOP:-}" in
-      *GNOME*) ;;
-      *)
-        [ "$FORCE" = 1 ] || die "the wallpaper code supports GNOME only, and this desktop is '${XDG_CURRENT_DESKTOP:-unknown}'. Rerun with --force to install anyway."
-        warn "not GNOME: the app will run, but setting the wallpaper may fail"
-        ;;
-    esac
     if have apt-get && have dpkg-query; then PKG=deb; else PKG=appimage; fi
-    if [ "$ARCH" != x86_64 ]; then
-      say "No prebuilt package for $ARCH; building from source"
-      FROM_SOURCE=1
-    elif ! version_ge "$glibc" "$BUILT_GLIBC"; then
-      say "glibc $glibc is older than the release build's $BUILT_GLIBC; building from source"
-      FROM_SOURCE=1
-    fi
-    if [ "$FROM_SOURCE" = 1 ] && [ "$PKG" != deb ]; then
-      die "building from source is only scripted for Ubuntu/Debian (apt). See 'Build' in the README."
+    if [ "$UNINSTALL" = 1 ]; then
+      : # Nothing below matters for removing it.
+    else
+      # WSL's own markers. The kernel name alone isn't enough: Docker Desktop
+      # containers also run on the WSL kernel.
+      if [ -n "${WSL_DISTRO_NAME:-}${WSL_INTEROP:-}" ] || [ -d /mnt/wsl ] \
+         || ls /proc/sys/fs/binfmt_misc/WSLInterop* >/dev/null 2>&1; then
+        die "this is WSL. Linux here has no desktop of its own, so the app can't set a wallpaper. Install it on Windows instead: see install.ps1 in the README."
+      fi
+      distro=$( (. /etc/os-release 2>/dev/null && echo "${PRETTY_NAME:-Linux}") || echo Linux)
+      # sed reads all of ldd's output; `head` would cut the pipe and, with
+      # pipefail, turn a good answer into a failure.
+      glibc=$(ldd --version 2>/dev/null | sed -n '1s/.* \([0-9][0-9]*\.[0-9][0-9]*\)$/\1/p')
+      glibc=${glibc:-0}
+      note "$distro on $ARCH, glibc $glibc, desktop: ${XDG_CURRENT_DESKTOP:-unknown}"
+      if [ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
+        warn "no graphical session found (DISPLAY and WAYLAND_DISPLAY are unset). Run this from a terminal on the desktop."
+      fi
+      case "${XDG_CURRENT_DESKTOP:-}" in
+        *GNOME*) ;;
+        *)
+          [ "$FORCE" = 1 ] || die "the wallpaper code supports GNOME only, and this desktop is '${XDG_CURRENT_DESKTOP:-unknown}'. Rerun with --force to install anyway."
+          warn "not GNOME: the app will run, but setting the wallpaper may fail"
+          ;;
+      esac
+      case "$ARCH-$PKG" in
+        x86_64-*) ;;
+        aarch64-deb) ;;
+        *) say "No prebuilt package for $ARCH without apt; building from source"; FROM_SOURCE=1 ;;
+      esac
+      if [ "$FROM_SOURCE" = 0 ] && ! version_ge "$glibc" "$BUILT_GLIBC"; then
+        say "glibc $glibc is older than the release build's $BUILT_GLIBC; building from source"
+        FROM_SOURCE=1
+      fi
+      if [ "$FROM_SOURCE" = 1 ] && [ "$PKG" != deb ]; then
+        die "building from source is only scripted for Ubuntu/Debian (apt). See 'Build' in the README."
+      fi
     fi
     ;;
   *) die "unsupported system: $OS. On Windows, use install.ps1." ;;
 esac
-
-# ------------------------------------------------------------- dependencies --
 
 APT_UPDATED=0
 apt_update() {
@@ -251,6 +268,92 @@ apt_install() {
 deb_installed() {
   dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q "install ok installed"
 }
+
+stop_app() {
+  if [ "$PLATFORM" = macos ]; then
+    run pkill -f "$APP_NAME.app/Contents/MacOS/" || true
+  else
+    # Process names are cut to 15 characters, so match the command line.
+    run pkill -f "^(/usr/bin/|$LOCAL_BIN/)?wallpaper-rotator( |\$)" || true
+    run pkill -f 'wallpaper-rotator\.AppImage' || true
+  fi
+}
+
+# ------------------------------------------------------------- uninstall --
+
+if [ "$UNINSTALL" = 1 ]; then
+  removed=""
+  # remove PATH...: deletes what exists, noting it.
+  remove() {
+    local p
+    for p in "$@"; do
+      [ -e "$p" ] || continue
+      run rm -rf "$p"
+      removed="$removed\n    $p"
+    done
+  }
+  progress 10 "Stopping $APP_NAME"
+  stop_app
+  if [ "$PLATFORM" = macos ]; then
+    progress 30 "Removing start at login"
+    agent="$HOME/Library/LaunchAgents/$APP_NAME.plist"
+    if [ -e "$agent" ]; then
+      run launchctl unload "$agent" 2>/dev/null || true
+      remove "$agent"
+    fi
+    progress 50 "Removing the app"
+    remove "/Applications/$APP_NAME.app"
+    progress 75 "Removing its cache"
+    remove "$HOME/Library/Caches/dev.dflippojr.wallpaper-rotator" \
+           "$HOME/Library/Caches/dev.dflippojr.Wallpaper-Rotator" \
+           "$HOME/Library/WebKit/dev.dflippojr.wallpaper-rotator"
+    settings="$HOME/Library/Application Support/dev.dflippojr.Wallpaper-Rotator"
+  else
+    progress 20 "Removing start at login"
+    remove "$HOME/.config/autostart/$APP_NAME.desktop"
+    # GNOME would be left pointing at a deleted file; go back to the default.
+    if have gsettings && gsettings get org.gnome.desktop.background picture-uri 2>/dev/null \
+         | grep -q "/wallpaperrotator/"; then
+      progress 30 "Resetting the desktop background"
+      for key in picture-uri picture-uri-dark picture-options; do
+        run gsettings reset org.gnome.desktop.background "$key" 2>/dev/null || true
+      done
+    fi
+    progress 45 "Removing the app"
+    if [ "$PKG" = deb ] && deb_installed wallpaper-rotator; then
+      sudo_ready
+      busy "Removing the package" "$PCT" 70 sudo apt-get remove -y wallpaper-rotator
+      removed="$removed\n    the wallpaper-rotator package"
+    fi
+    remove "$LOCAL_BIN/wallpaper-rotator" "$LOCAL_BIN/wallpaper-rotator.AppImage" \
+           "$DESKTOP_FILE" "$ICON_FILE" "$LOCAL_SHARE/wallpaper-rotator"
+    progress 80 "Removing its cache"
+    remove "$HOME/.cache/wallpaperrotator" "$HOME/.cache/dev.dflippojr.wallpaper-rotator" \
+           "$LOCAL_SHARE/dev.dflippojr.wallpaper-rotator"
+    settings="$HOME/.config/wallpaperrotator $LOCAL_SHARE/wallpaperrotator"
+  fi
+  if [ "$PURGE" = 1 ]; then
+    progress 90 "Removing settings"
+    # shellcheck disable=SC2086 # Linux lists two folders.
+    if [ "$PLATFORM" = macos ]; then remove "$settings"; else remove $settings; fi
+  fi
+  if [ "$DRY_RUN" = 1 ]; then say "Dry run: nothing was changed."; exit 0; fi
+  progress 100 "Done"
+  [ "$PROGRESS" = 0 ] || printf '\n' >&3
+  if [ -z "$removed" ]; then
+    show "$TICK $APP_NAME wasn't installed; nothing to remove."
+  else
+    show "$TICK $APP_NAME is uninstalled."
+    say "Removed:$(printf '%b' "$removed")"
+    if [ "$PURGE" = 0 ]; then
+      show "  Your settings stay, in case you reinstall. To remove them too, add --purge."
+    fi
+  fi
+  show "  Your favorites folder is untouched: ~/Pictures/Wallpaper Favorites"
+  exit 0
+fi
+
+# ---------------------------------------------------------- dependencies --
 
 # Ask for the sudo password now, before the progress bar runs.
 if [ "$PLATFORM" = linux ] && [ "$PKG" = deb ]; then sudo_ready; fi
@@ -305,16 +408,20 @@ if [ "$FROM_SOURCE" = 1 ]; then
     fi
   fi
 
-  if have cargo && cargo tauri --version 2>/dev/null | grep -q ' 2\.'; then
-    ok "Tauri CLI ($(cargo tauri --version | awk '{print $2}'))"
-  else
-    miss "Tauri CLI 2"
-    busy "Installing the Tauri build tool" "$PCT" $((PCT + 10)) \
-      cargo install --locked tauri-cli --version "^2"
+  # macOS needs Tauri's bundler for the .app; Linux installs the binary
+  # directly, so it skips compiling the Tauri build tool (minutes).
+  if [ "$PLATFORM" = macos ]; then
+    if have cargo && cargo tauri --version 2>/dev/null | grep -q ' 2\.'; then
+      ok "Tauri CLI ($(cargo tauri --version | awk '{print $2}'))"
+    else
+      miss "Tauri CLI 2"
+      busy "Installing the Tauri build tool" "$PCT" $((PCT + 10)) \
+        cargo install --locked tauri-cli --version "^2"
+    fi
   fi
 fi
 
-# ---------------------------------------------------------------- versions --
+# --------------------------------------------------------------- versions --
 
 # api URL: a GitHub API call. Uses GITHUB_TOKEN when set (CI), which lifts
 # the 60-requests-an-hour limit for anonymous calls.
@@ -338,10 +445,10 @@ fetch() {
 installed_version() {
   if [ "$PLATFORM" = macos ]; then
     defaults read "/Applications/$APP_NAME.app/Contents/Info" CFBundleShortVersionString 2>/dev/null || true
-  elif [ "$PKG" = deb ]; then
+  elif [ "$PKG" = deb ] && deb_installed wallpaper-rotator; then
     dpkg-query -W -f='${Version}' wallpaper-rotator 2>/dev/null || true
-  else
-    [ -f "$HOME/.local/share/wallpaper-rotator/version" ] && cat "$HOME/.local/share/wallpaper-rotator/version" || true
+  elif [ -f "$VERSION_FILE" ]; then
+    cat "$VERSION_FILE"
   fi
 }
 CURRENT=$(installed_version)
@@ -364,26 +471,18 @@ if [ -n "$CURRENT" ] && [ -n "$TAG" ] && [ "v$CURRENT" = "$TAG" ] && [ "$FORCE" 
   exit 0
 fi
 
-# ----------------------------------------------------------------- install --
-
-stop_app() {
-  if [ "$PLATFORM" = macos ]; then
-    run pkill -f "$APP_NAME.app/Contents/MacOS/" || true
-  else
-    # Process names are cut to 15 characters, so match the command line.
-    run pkill -f '^(/usr/bin/)?wallpaper-rotator( |$)' || true
-    run pkill -f 'wallpaper-rotator\.AppImage' || true
-  fi
-}
+# ---------------------------------------------------------------- install --
 
 start_app() {
   progress 97 "Starting $APP_NAME"
   if [ "$PLATFORM" = macos ]; then
     run open -a "/Applications/$APP_NAME.app"
-  elif [ "$PKG" = deb ]; then
+  elif [ "$PKG" = deb ] && deb_installed wallpaper-rotator; then
     run sh -c 'nohup wallpaper-rotator >/dev/null 2>&1 &'
+  elif [ -x "$LOCAL_BIN/wallpaper-rotator" ]; then
+    run sh -c "nohup '$LOCAL_BIN/wallpaper-rotator' >/dev/null 2>&1 &"
   else
-    run sh -c "nohup '$HOME/.local/bin/wallpaper-rotator.AppImage' >/dev/null 2>&1 &"
+    run sh -c "nohup '$LOCAL_BIN/wallpaper-rotator.AppImage' >/dev/null 2>&1 &"
   fi
 }
 
@@ -403,17 +502,40 @@ install_macos_app() { # $1 = path to "Wallpaper Rotator.app"
 
 install_deb() { # $1 = path to the .deb
   progress 82 "Checking the libraries the package needs"
+  local missing=0 dep
   if [ -f "$1" ]; then
-    dpkg-deb -f "$1" Depends | tr ',' '\n' | sed 's/^ *//; s/ .*//; s/|.*//' | while read -r dep; do
+    while read -r dep; do
       [ -n "$dep" ] || continue
-      if deb_installed "$dep"; then ok "$dep"; else miss "$dep (apt will install it)"; fi
-    done
+      if deb_installed "$dep"; then ok "$dep"; else miss "$dep (apt will install it)"; missing=1; fi
+    done < <(dpkg-deb -f "$1" Depends | tr ',' '\n' | sed 's/^ *//; s/ .*//; s/|.*//')
+  else
+    missing=1
   fi
   stop_app
-  # apt resolves and installs the missing libraries itself.
-  apt_update
   sudo_ready
-  busy "Installing the package" "$PCT" 95 sudo apt-get install -y "$1"
+  # A desktop usually has every library already, so skip refreshing the
+  # package lists (the slowest part) unless something has to be fetched.
+  if [ "$missing" = 1 ]; then
+    apt_update
+    busy "Installing the package and its libraries" "$PCT" 95 sudo apt-get install -y "$1"
+  elif ! busy "Installing the package" "$PCT" 95 sudo apt-get install -y "$1"; then
+    apt_update
+    busy "Installing the package" "$PCT" 95 sudo apt-get install -y "$1"
+  fi
+}
+
+desktop_entry() { # $1 = command, $2 = icon name or path
+  [ "$DRY_RUN" = 0 ] || { note "would write $DESKTOP_FILE"; return; }
+  mkdir -p "$(dirname "$DESKTOP_FILE")"
+  cat > "$DESKTOP_FILE" <<EOF
+[Desktop Entry]
+Type=Application
+Name=$APP_NAME
+Comment=Rotates wallpapers from Unsplash and other sources without filling your disk
+Exec=$1
+Icon=$2
+Categories=Utility;
+EOF
 }
 
 install_appimage() { # $1 = path to the AppImage, $2 = version
@@ -424,20 +546,10 @@ install_appimage() { # $1 = path to the AppImage, $2 = version
     warn "libfuse2 is missing: install your distribution's fuse2 package (Fedora: fuse-libs) so the AppImage can start"
   fi
   stop_app
-  run mkdir -p "$HOME/.local/bin" "$HOME/.local/share/applications" "$HOME/.local/share/wallpaper-rotator"
-  run install -m 755 "$1" "$HOME/.local/bin/wallpaper-rotator.AppImage"
-  if [ "$DRY_RUN" = 0 ]; then
-    printf '%s\n' "$2" > "$HOME/.local/share/wallpaper-rotator/version"
-    cat > "$HOME/.local/share/applications/wallpaper-rotator.desktop" <<EOF
-[Desktop Entry]
-Type=Application
-Name=$APP_NAME
-Comment=Rotates Unsplash wallpapers without filling your disk
-Exec=$HOME/.local/bin/wallpaper-rotator.AppImage
-Icon=preferences-desktop-wallpaper
-Categories=Utility;
-EOF
-  fi
+  run mkdir -p "$LOCAL_BIN" "$(dirname "$VERSION_FILE")"
+  run install -m 755 "$1" "$LOCAL_BIN/wallpaper-rotator.AppImage"
+  [ "$DRY_RUN" = 1 ] || printf '%s\n' "$2" > "$VERSION_FILE"
+  desktop_entry "$LOCAL_BIN/wallpaper-rotator.AppImage" preferences-desktop-wallpaper
 }
 
 download() { # $1 = end of the release file's name, such as _amd64.deb
@@ -477,9 +589,9 @@ download() { # $1 = end of the release file's name, such as _amd64.deb
 }
 
 if [ "$FROM_SOURCE" = 0 ]; then
-  case "$PLATFORM-${PKG:-}" in
+  case "$PLATFORM-$PKG-$ARCH" in
     macos-*)
-      dmg=$(download '_aarch64.dmg')
+      dmg=$(download '_universal.dmg')
       if [ "$DRY_RUN" = 1 ]; then
         install_macos_app "/Volumes/(dmg)/$APP_NAME.app"
       else
@@ -491,8 +603,9 @@ if [ "$FROM_SOURCE" = 0 ]; then
       fi
       ;;
     # Assigned first, so a failed download stops the install (set -e).
-    linux-deb) deb=$(download '_amd64.deb'); install_deb "$deb" ;;
-    linux-appimage) img=$(download '_amd64.AppImage'); install_appimage "$img" "${TAG#v}" ;;
+    linux-deb-aarch64) deb=$(download '_arm64.deb'); install_deb "$deb" ;;
+    linux-deb-*) deb=$(download '_amd64.deb'); install_deb "$deb" ;;
+    linux-appimage-*) img=$(download '_amd64.AppImage'); install_appimage "$img" "${TAG#v}" ;;
   esac
 else
   # Build in the current clone if run from one, else in ~/wallpaper-rotator.
@@ -507,12 +620,27 @@ else
     run git clone "https://github.com/$REPO.git" "$src"
   fi
   if [ "$PLATFORM" = macos ]; then
-    busy "Building, which takes several minutes" 30 85 sh -c "cd '$src/app' && cargo tauri build --bundles app"
+    busy "Building, which takes several minutes" 30 85 \
+      sh -c "cd '$src/app' && cargo tauri build --bundles app"
     install_macos_app "$src/target/release/bundle/macos/$APP_NAME.app"
   else
-    busy "Building, which takes several minutes" 30 80 sh -c "cd '$src/app' && cargo tauri build --bundles deb"
-    deb=$(ls -t "$src"/target/release/bundle/deb/*.deb 2>/dev/null | sed -n 1p || true)
-    install_deb "${deb:-$src/target/release/bundle/deb/(built).deb}"
+    # Plain cargo with the `local` profile (no link-time optimization) is
+    # much faster than a release bundle; custom-protocol serves the
+    # embedded UI, as `cargo tauri build` would.
+    busy "Building, which takes a few minutes" 30 85 \
+      cargo build --manifest-path "$src/Cargo.toml" --profile local \
+        -p wallpaper-rotator --features tauri/custom-protocol
+    progress 88 "Installing to ~/.local"
+    stop_app
+    if [ "$DRY_RUN" = 1 ]; then
+      note "would install $src/target/local/wallpaper-rotator to $LOCAL_BIN"
+    else
+      mkdir -p "$LOCAL_BIN" "$(dirname "$ICON_FILE")" "$(dirname "$VERSION_FILE")"
+      install -m 755 "$src/target/local/wallpaper-rotator" "$LOCAL_BIN/wallpaper-rotator"
+      install -m 644 "$src/app/icons/128x128.png" "$ICON_FILE"
+      sed -n 's/^  "version": "\(.*\)",$/\1/p' "$src/app/tauri.conf.json" > "$VERSION_FILE"
+    fi
+    desktop_entry "$LOCAL_BIN/wallpaper-rotator" wallpaper-rotator
   fi
 fi
 
@@ -523,8 +651,7 @@ if [ "$DRY_RUN" = 1 ]; then
 fi
 progress 100 "Done"
 # Leave the full bar on screen above the summary.
-[ "$PROGRESS" = 0 ] || printf '
-' >&3
+[ "$PROGRESS" = 0 ] || printf '\n' >&3
 if [ "$PLATFORM" = linux ]; then
   where="Click its icon in the top bar and choose Show"
 else

@@ -1,5 +1,5 @@
 <#
-Installs or updates Wallpaper Rotator on Windows 10 or 11.
+Installs, updates or uninstalls Wallpaper Rotator on Windows 10 or 11.
 
   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/dflippojr/wallpaper-rotator/main/install.ps1)))
 
@@ -14,6 +14,9 @@ The setup installs the WebView2 runtime if it is missing.
   -Verbose  print every check instead of a progress bar
   -Force    reinstall even if this version is already installed
   -Version  install a specific release tag instead of the latest
+  -Uninstall  remove the app, its start-at-login entry and its cache;
+              settings stay unless -Purge is given too, and the favorites
+              folder is never touched
 
 Run it again any time to update.
 #>
@@ -21,6 +24,8 @@ param(
     [switch]$DryRun,
     [switch]$Force,
     [switch]$Verbose,
+    [switch]$Uninstall,
+    [switch]$Purge,
     [string]$Version = ''
 )
 
@@ -28,7 +33,8 @@ $ErrorActionPreference = 'Stop'
 $Repo = 'dflippojr/wallpaper-rotator'
 $AppName = 'Wallpaper Rotator'
 $WebView2Id = '{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
-$Activity = "Installing $AppName"
+if ($Purge -and -not $Uninstall) { throw '-Purge goes with -Uninstall.' }
+if ($Uninstall) { $Activity = "Uninstalling $AppName" } else { $Activity = "Installing $AppName" }
 $Log = Join-Path ([IO.Path]::GetTempPath()) 'wallpaper-rotator-install.log'
 # One progress bar, with the details in $Log; -Verbose and -DryRun print
 # every line instead.
@@ -137,6 +143,86 @@ try {
         Note 'ARM64: the x64 build runs under Windows emulation.'
     } elseif ($env:PROCESSOR_ARCHITECTURE -ne 'AMD64') {
         throw "Only 64-bit Windows is supported (this is $env:PROCESSOR_ARCHITECTURE)."
+    }
+
+    # ----------------------------------------------------------- uninstall --
+
+    if ($Uninstall) {
+        $removed = New-Object System.Collections.Generic.List[string]
+        # Deletes the folders that exist, noting them. WebView2 can hold a lock
+        # file for a moment after the app exits, so retry for a few seconds.
+        function Remove-Folder([string[]]$Paths) {
+            foreach ($path in $Paths) {
+                if (Test-Path $path) {
+                    Step "remove $path" {
+                        for ($try = 1; ; $try++) {
+                            try { Remove-Item -Recurse -Force $path; break }
+                            catch { if ($try -ge 20) { throw }; Start-Sleep -Milliseconds 500 }
+                        }
+                    } | Out-Null
+                    $removed.Add($path)
+                }
+            }
+        }
+        Step-Progress 10 "Stopping $AppName"
+        Step 'stop the running app and its WebView2 helpers' {
+            Get-Process -Name 'wallpaper-rotator' -ErrorAction SilentlyContinue | Stop-Process -Force
+            # Only the helpers using this app's data folder, not other apps'.
+            Get-CimInstance Win32_Process -Filter "Name = 'msedgewebview2.exe'" -ErrorAction SilentlyContinue |
+                Where-Object { $_.CommandLine -like '*dev.dflippojr.wallpaper-rotator*' } |
+                ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+        } | Out-Null
+
+        Step-Progress 25 'Removing start at login'
+        $run = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+        if ((Get-ItemProperty -Path $run -ErrorAction SilentlyContinue).$AppName) {
+            Step 'remove the start-at-login entry' {
+                Remove-ItemProperty -Path $run -Name $AppName
+            } | Out-Null
+            $removed.Add('the start-at-login entry')
+        }
+
+        Step-Progress 40 'Removing the app'
+        $installed = Get-Installed
+        if ($installed) {
+            $uninstaller = $installed.UninstallString.Trim('"')
+            Step "run $uninstaller /S" {
+                $p = Start-Process -FilePath $uninstaller -ArgumentList '/S' -PassThru
+                $null = $p.Handle
+                $p.WaitForExit()
+                # The uninstaller copies itself and returns before it's done.
+                $deadline = (Get-Date).AddSeconds(60)
+                while ((Get-Installed) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
+            } | Out-Null
+            $removed.Add("$AppName $($installed.DisplayVersion)")
+        }
+
+        Step-Progress 75 'Removing its cache'
+        Remove-Folder @(
+            (Join-Path $env:LOCALAPPDATA 'dflippojr\Wallpaper Rotator'),
+            (Join-Path $env:LOCALAPPDATA 'dev.dflippojr.wallpaper-rotator'))
+        if ($Purge) {
+            Step-Progress 90 'Removing settings'
+            Remove-Folder @(Join-Path $env:APPDATA 'dflippojr\Wallpaper Rotator')
+        }
+        # The vendor folders, once empty.
+        foreach ($parent in @((Join-Path $env:APPDATA 'dflippojr'), (Join-Path $env:LOCALAPPDATA 'dflippojr'))) {
+            if ((Test-Path $parent) -and -not (Get-ChildItem $parent)) {
+                Step "remove empty $parent" { Remove-Item $parent } | Out-Null
+            }
+        }
+
+        if ($DryRun) { Say 'Dry run: nothing was changed.'; return }
+        if ($Bar) { Write-Progress -Activity $Activity -Completed }
+        if ($removed.Count -eq 0) {
+            Show "$Tick $AppName wasn't installed; nothing to remove." 'Green'
+        } else {
+            Say ("Removed: " + ($removed -join '; '))
+            Show "$Tick $AppName is uninstalled." 'Green'
+            if (-not $Purge) { Show '  Your settings stay, in case you reinstall. To remove them too, add -Purge.' }
+        }
+        Show '  Your favorites folder is untouched: Pictures\Wallpaper Favorites'
+        return
     }
 
     # -------------------------------------------------------- dependencies --

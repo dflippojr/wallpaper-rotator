@@ -3,7 +3,7 @@
 #
 #   scripts/build-release.sh linux     .deb and .AppImage (in Docker)
 #   scripts/build-release.sh windows   NSIS setup .exe, cross-built (in Docker)
-#   scripts/build-release.sh macos     .dmg (run on a Mac)
+#   scripts/build-release.sh macos     universal .dmg (run on a Mac)
 #
 # Then publish with: gh release create vX.Y.Z dist/*
 set -euo pipefail
@@ -42,8 +42,9 @@ case "${1:-}" in
     [ "$(uname -s)" = Darwin ] || { echo "macOS builds must run on a Mac" >&2; exit 1; }
     # CI=true skips the Finder AppleScript that lays out the disk image
     # window, which would otherwise ask for automation permission.
-    (cd app && CI=true cargo tauri build --bundles dmg)
-    cp target/release/bundle/dmg/*.dmg dist/
+    rustup target add aarch64-apple-darwin x86_64-apple-darwin
+    (cd app && CI=true cargo tauri build --bundles dmg --target universal-apple-darwin)
+    cp target/universal-apple-darwin/release/bundle/dmg/*.dmg dist/
     ;;
   *)
     sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'

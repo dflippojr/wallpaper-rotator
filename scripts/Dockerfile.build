@@ -1,6 +1,7 @@
-# Release build environment: Ubuntu 24.04 with the Tauri Linux libraries,
-# plus what Tauri needs to cross-build the Windows NSIS installer.
-FROM ubuntu:24.04
+# Release build environment: Ubuntu 22.04 (so the packages run on 22.04 and
+# later) with the Tauri Linux libraries, plus what Tauri needs to cross-build
+# the Windows NSIS installer.
+FROM ubuntu:22.04
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential curl ca-certificates git pkg-config file xdg-utils \

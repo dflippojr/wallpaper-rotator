@@ -41,7 +41,7 @@ How the mix works:
 
 One command per system. The installer checks your machine and which dependencies are already there, installs only what's missing, then installs the latest release. **Run the same command again to update.**
 
-**macOS (Apple silicon or Intel):**
+**macOS (one app for Apple silicon and Intel):**
 ```sh
 curl -fsSL https://raw.githubusercontent.com/dflippojr/wallpaper-rotator/main/install.sh | bash
 ```
@@ -62,11 +62,10 @@ Then add your Unsplash key (see Setup above): click the tray or menu-bar icon (o
 
 | Machine | It installs |
 | --- | --- |
-| Mac with Apple silicon | the `.dmg`'s app into `/Applications` |
-| Intel Mac | a build from source (installs Xcode Command Line Tools, Rust and the Tauri CLI if missing) |
-| Ubuntu / Debian x86_64 | the `.deb` with apt, which adds any missing libraries |
+| Mac (Apple silicon or Intel) | the universal `.dmg`'s app into `/Applications` |
+| Ubuntu 22.04+ / Debian 12+, x86_64 or arm64 | the `.deb` with apt; the package lists are only refreshed if a library is missing |
 | Other x86_64 Linux | the AppImage in `~/.local/bin`, plus a menu entry |
-| Linux with an older glibc than Ubuntu 24.04, or ARM | a build from source (apt-based only; installs only the missing build packages) |
+| Older Linux, or ARM without apt | a build from source (apt-based only): installs only the missing build packages, builds with `cargo` (no link-time optimization, so it's quicker) and installs into `~/.local/bin` with a menu entry |
 | Windows 10/11 x64 (ARM64 runs it emulated) | the setup `.exe`, silently, for the current user; it adds WebView2 if missing |
 | WSL | nothing: WSL has no desktop of its own. Install on Windows instead. |
 
@@ -84,6 +83,19 @@ Options:
 - **Windows:** add `-DryRun` after the last parenthesis. `-Verbose`, `-Force` and `-Version v0.2.0` also work.
 
 From a clone of the repo, run `bash install.sh` or `powershell -ExecutionPolicy Bypass -File install.ps1`.
+
+### Uninstall
+
+The same scripts remove the app, its start-at-login entry and its cache:
+
+- **macOS / Linux:** `curl -fsSL https://raw.githubusercontent.com/dflippojr/wallpaper-rotator/main/install.sh | bash -s -- --uninstall` (or `wget -qO-` on Ubuntu).
+- **Windows:** `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/dflippojr/wallpaper-rotator/main/install.ps1))) -Uninstall`
+
+What it removes:
+- **Your settings and keys** stay, in case you reinstall. Add `--purge` (`-Purge` on Windows) to remove them too.
+- **The favorites folder** is never touched.
+- **On GNOME**, the desktop background goes back to the default, since the cached photo is deleted.
+- **`--dry-run`** shows what would be removed.
 
 ## Manual install on Ubuntu (GNOME)
 
@@ -174,7 +186,13 @@ The installers fetch the files attached to the latest GitHub release. To publish
    ```sh
    git tag v0.3.0 && git push origin v0.3.0
    ```
-   The **Release** workflow checks that the tag matches the version, builds the `.deb` and AppImage (Ubuntu 24.04), the `.dmg` (Apple silicon) and the Windows setup `.exe`, uploads them, and publishes the release.
+   The **Release** workflow checks that the tag matches the version, then builds and uploads the installers:
+   - the `.deb` and AppImage on Ubuntu 22.04, so they run on 22.04 and later
+   - an arm64 `.deb`
+   - a universal `.dmg`
+   - the Windows setup `.exe`
+
+   Then it publishes the release.
 
 To build the installers by hand instead, use `scripts/build-release.sh linux|windows|macos`. Linux and Windows build in Docker (Windows is cross-built, so no MSVC is needed); the macOS build runs on a Mac. Then publish with `gh release create vX.Y.Z dist/*`.
 

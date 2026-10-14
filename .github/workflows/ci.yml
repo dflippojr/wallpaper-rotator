@@ -46,7 +46,9 @@ jobs:
           XDG_CURRENT_DESKTOP: ubuntu:GNOME
           DISPLAY: ":0"
           GITHUB_TOKEN: ${{ github.token }}
-        run: bash install.sh --dry-run
+        run: |
+          bash install.sh --dry-run
+          bash install.sh --uninstall --purge --dry-run
 
   installer-windows:
     runs-on: windows-latest
@@ -61,3 +63,4 @@ jobs:
           [System.Management.Automation.Language.Parser]::ParseFile("$PWD\install.ps1", [ref]$null, [ref]$errors) | Out-Null
           if ($errors) { $errors | ForEach-Object { $_.ToString() }; exit 1 }
           .\install.ps1 -DryRun
+          .\install.ps1 -Uninstall -Purge -DryRun
