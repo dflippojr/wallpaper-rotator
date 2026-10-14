@@ -40,7 +40,9 @@ case "${1:-}" in
     ;;
   macos)
     [ "$(uname -s)" = Darwin ] || { echo "macOS builds must run on a Mac" >&2; exit 1; }
-    (cd app && cargo tauri build --bundles dmg)
+    # CI=true skips the Finder AppleScript that lays out the disk image
+    # window, which would otherwise ask for automation permission.
+    (cd app && CI=true cargo tauri build --bundles dmg)
     cp target/release/bundle/dmg/*.dmg dist/
     ;;
   *)
