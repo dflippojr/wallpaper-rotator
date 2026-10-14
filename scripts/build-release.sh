@@ -21,6 +21,8 @@ in_docker() {
     -v wallpaper-rotator-target:/target -e CARGO_TARGET_DIR=/target \
     wallpaper-rotator-build bash -euo pipefail -c "
       rm -rf /src/* && cp -r /repo/. /src && cd /src/app
+      # Bundles from earlier builds share the cached target folder.
+      rm -rf /target/release/bundle /target/*/release/bundle
       $1
     "
 }
