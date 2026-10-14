@@ -108,8 +108,9 @@ fn get_state(state: State<'_, AppState>) -> Snapshot {
 }
 
 #[tauri::command]
-fn next_wallpaper(state: State<'_, AppState>) {
-    state.send(Command::Next);
+/// A new photo for the display at `index` in the snapshot, or for all.
+fn next_wallpaper(state: State<'_, AppState>, index: Option<usize>) {
+    state.send(Command::Next(index));
 }
 
 /// Saves the photo at `index` in the snapshot, or all current photos.
@@ -295,7 +296,7 @@ fn build_tray(app: &AppHandle, paused: bool) -> tauri::Result<()> {
             let state = app.state::<AppState>();
             match event.id().as_ref() {
                 "show" => show_popover(app, None),
-                "next" => state.send(Command::Next),
+                "next" => state.send(Command::Next(None)),
                 "favorite" => state.send(Command::Favorite(None)),
                 "pause" => {
                     let paused = pause_item.is_checked().unwrap_or(false);

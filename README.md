@@ -10,7 +10,7 @@ Other rotators save every photo they cycle through. This one keeps only the wall
 - Mixes photo sources, and fills in from the others when one is rate-limited or offline (see below).
 - One search ("mountains") for Unsplash, Pexels and Wallhaven, plus Unsplash topics (default: `wallpapers`).
 - Every photo is cropped to your screen's resolution instead of keeping the multi-MB original.
-- Optional different photo on each display, each sized for that display.
+- Optional different photo on each display, each sized for that display. The popover's refresh button then changes only the display you're viewing; the tray menu's "Next wallpaper" and the schedule change them all.
 - Tray popover: preview, location, next, save to favorites, photographer credit, settings.
 - Starts at login (release builds).
 

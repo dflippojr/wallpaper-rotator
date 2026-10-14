@@ -73,6 +73,9 @@ function render(s) {
     $("source-link").textContent = "";
   }
 
+  const nextTitle = s.current.length > 1 && w ? `New photo for ${w.display || `display ${shown + 1}`}` : "Next wallpaper";
+  $("btn-next").title = nextTitle;
+  $("btn-next").setAttribute("aria-label", nextTitle);
   $("btn-next").classList.toggle("spinning", s.busy);
   $("btn-next").disabled = s.busy || s.needs_setup;
   // Until there is a photo, the empty-state text says what's happening.
@@ -165,7 +168,10 @@ function openLink(event) {
   if (url) invoke("open_link", { url });
 }
 
-$("btn-next").addEventListener("click", () => invoke("next_wallpaper"));
+// With a photo per display, only the display being shown changes.
+$("btn-next").addEventListener("click", () =>
+  invoke("next_wallpaper", { index: snapshot && snapshot.current.length > 1 ? shown : null }),
+);
 $("btn-favorite").addEventListener("click", () => invoke("favorite", { index: shown }));
 $("btn-folder").addEventListener("click", () => invoke("open_favorites"));
 $("btn-settings").addEventListener("click", () => ($("view-settings").hidden ? openSettings() : closeSettings()));

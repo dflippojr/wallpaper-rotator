@@ -43,8 +43,9 @@ const QUEUE_LIMIT: usize = 120;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
-    /// Rotate now.
-    Next,
+    /// Rotate now: every display, or (with a photo per display) only the
+    /// display showing the current photo at this position.
+    Next(Option<usize>),
     /// Copy a current photo (by position) or all of them into the
     /// favorites folder.
     Favorite(Option<usize>),
@@ -278,9 +279,9 @@ impl Service {
 
     pub fn handle(&mut self, command: Command) {
         match command {
-            Command::Next => {
+            Command::Next(only) => {
                 self.notice = None;
-                self.rotate_and_prefetch();
+                self.rotate_and_prefetch(only);
             }
             Command::Favorite(index) => {
                 match self.favorite(index) {
@@ -305,7 +306,7 @@ impl Service {
                 self.check_displays();
                 if self.rotation_due() {
                     self.notice = None;
-                    self.rotate_and_prefetch();
+                    self.rotate_and_prefetch(None);
                 } else {
                     self.prefetch_if_needed();
                     self.publish();
@@ -457,10 +458,13 @@ impl Service {
             && now() >= self.last_failed_fetch + RETRY_AFTER_SECS
     }
 
-    fn rotate_and_prefetch(&mut self) {
+    fn rotate_and_prefetch(&mut self, only: Option<usize>) {
         self.busy = true;
         self.publish();
-        let result = self.rotate();
+        let result = match only {
+            Some(index) => self.rotate_one(index),
+            None => self.rotate(),
+        };
         self.busy = false;
         match result {
             Ok(()) => self.error = None,
@@ -496,22 +500,159 @@ impl Service {
             self.state.next = Some(next);
             return Err(e);
         }
-        let key = self.config.effective_key();
         for photo in &next.photos {
-            if photo.source == SourceId::Unsplash && !photo.download_location.is_empty() {
-                if let Err(e) = unsplash::track(&self.http, &key, &photo.download_location) {
-                    self.log(&format!("download tracking failed: {e:#}"));
-                }
-            }
-            self.log(&format!(
-                "wallpaper set: {} by {} ({})",
-                photo.id,
-                photo.author,
-                photo.source.name()
-            ));
+            self.used(photo);
         }
         self.state.current = Some(next);
         self.state.last_rotated = now();
+        self.save_state();
+        self.cleanup();
+        Ok(())
+    }
+
+    /// Reports a photo that just went on screen (Unsplash's terms) and logs it.
+    fn used(&self, photo: &Wallpaper) {
+        if photo.source == SourceId::Unsplash && !photo.download_location.is_empty() {
+            let key = self.config.effective_key();
+            if let Err(e) = unsplash::track(&self.http, &key, &photo.download_location) {
+                self.log(&format!("download tracking failed: {e:#}"));
+            }
+        }
+        let place = photo
+            .display
+            .as_ref()
+            .map(|d| format!(" on {}", d.name))
+            .unwrap_or_default();
+        self.log(&format!(
+            "wallpaper set: {} by {} ({}){place}",
+            photo.id,
+            photo.author,
+            photo.source.name()
+        ));
+    }
+
+    /// Replaces only the photo at `index` (one display's), keeping the
+    /// others and the schedule. Falls back to rotating everything when the
+    /// photos aren't per display or that display is gone.
+    fn rotate_one(&mut self, index: usize) -> Result<()> {
+        let displays = self.live_displays();
+        let target = self
+            .state
+            .current
+            .as_ref()
+            .and_then(|s| s.photos.get(index))
+            .and_then(|w| w.display.as_ref())
+            .and_then(|d| displays.iter().find(|live| live.id == d.id))
+            .cloned();
+        let (Some(target), Some(current)) = (target, self.state.current.clone()) else {
+            return self.rotate();
+        };
+        // This display's prefetched photo, if it's ready: instant. Its slot
+        // in the prefetched set is filled again in the background.
+        let ready = self.state.next.as_mut().and_then(|next| {
+            let i = next
+                .photos
+                .iter()
+                .position(|w| w.display.as_ref() == Some(&target) && w.file.exists())?;
+            next.spanned = None;
+            Some(next.photos.remove(i))
+        });
+        if self
+            .state
+            .next
+            .as_ref()
+            .is_some_and(|n| n.photos.is_empty())
+        {
+            self.state.next = None;
+        }
+        let photo = match ready {
+            Some(photo) => photo,
+            None => {
+                let mut used: HashSet<String> = [&self.state.current, &self.state.next]
+                    .into_iter()
+                    .flatten()
+                    .flat_map(|s| &s.photos)
+                    .map(|w| w.id.clone())
+                    .collect();
+                let mut notes = Vec::new();
+                let size = (target.width, target.height);
+                let photo = self.photo_for(size, Some(target.clone()), &mut used, &mut notes)?;
+                if !notes.is_empty() {
+                    self.notice = Some(fallback_notice(&notes, &Set::single(photo.clone())));
+                }
+                photo
+            }
+        };
+        let mut set = current;
+        set.photos[index] = photo;
+        set.spanned = None;
+        if wallpaper::SPANS_ONE_IMAGE {
+            set = self.stitch(set, &displays)?;
+        }
+        (self.hooks.apply)(&set.layout())?;
+        self.used(&set.photos[index]);
+        self.state.current = Some(set);
+        self.save_state();
+        self.cleanup();
+        Ok(())
+    }
+
+    /// Fills the displays a prefetched set is missing (after one display got
+    /// its photo early), instead of fetching a whole new set.
+    fn top_up_next(&mut self, displays: &[Display]) -> Result<()> {
+        let partial = self.state.next.as_ref().is_some_and(|next| {
+            !next.photos.is_empty()
+                && next.photos.len() < displays.len()
+                && next.on_disk()
+                && next
+                    .photos
+                    .iter()
+                    .all(|w| w.display.as_ref().is_some_and(|d| displays.contains(d)))
+        });
+        if !partial {
+            return Ok(());
+        }
+        let Some(mut set) = self.state.next.take() else {
+            return Ok(());
+        };
+        let mut used: HashSet<String> = self
+            .state
+            .current
+            .iter()
+            .chain([&set])
+            .flat_map(|s| &s.photos)
+            .map(|w| w.id.clone())
+            .collect();
+        let mut notes = Vec::new();
+        for display in displays {
+            if set
+                .photos
+                .iter()
+                .any(|w| w.display.as_ref() == Some(display))
+            {
+                continue;
+            }
+            let size = (display.width, display.height);
+            match self.photo_for(size, Some(display.clone()), &mut used, &mut notes) {
+                Ok(photo) => set.photos.push(photo),
+                Err(e) => {
+                    self.state.next = Some(set);
+                    return Err(e);
+                }
+            }
+        }
+        // Display order, as the popover lists them.
+        set.photos.sort_by_key(|w| {
+            displays
+                .iter()
+                .position(|d| w.display.as_ref() == Some(d))
+                .unwrap_or(usize::MAX)
+        });
+        set.spanned = None;
+        if wallpaper::SPANS_ONE_IMAGE {
+            set = self.stitch(set, displays)?;
+        }
+        self.state.next = Some(set);
         self.save_state();
         self.cleanup();
         Ok(())
@@ -523,6 +664,13 @@ impl Service {
         }
         let displays = self.live_displays();
         let each = self.each(&displays);
+        if each {
+            if let Err(e) = self.top_up_next(&displays) {
+                self.last_failed_fetch = now();
+                self.log(&format!("prefetch failed: {e:#}"));
+                return;
+            }
+        }
         let ready = self
             .state
             .next
@@ -695,8 +843,22 @@ impl Service {
                 refilled = true;
                 continue;
             }
+            // A small pool (a few favorites, say) may have nothing unused
+            // left: repeat one rather than fail, preferring one that isn't
+            // on screen right now.
+            let best = best.or_else(|| {
+                let on_screen: HashSet<String> = self
+                    .state
+                    .current
+                    .iter()
+                    .flat_map(|s| &s.photos)
+                    .map(|w| w.id.clone())
+                    .collect();
+                self.best_queued(source, (width, height), &on_screen)
+                    .or_else(|| self.best_queued(source, (width, height), &HashSet::new()))
+            });
             let Some((index, _)) = best else {
-                bail!("{} had no new photos", source.name());
+                bail!("{} had no photos", source.name());
             };
             let candidate = self
                 .state
@@ -1060,7 +1222,7 @@ mod tests {
         svc.handle(Command::Tick);
         assert!(applied.lock().unwrap().is_empty());
         assert!(svc.snapshot().needs_setup);
-        svc.handle(Command::Next);
+        svc.handle(Command::Next(None));
         assert!(svc.snapshot().error.unwrap().contains("photo source"));
     }
 
@@ -1207,6 +1369,72 @@ mod tests {
         );
         // A shared photo doesn't fit once per-display is on.
         assert!(!cached(&svc, "shared").fits(&screens, svc.each(&screens)));
+    }
+
+    #[test]
+    fn next_on_one_display_keeps_the_others() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut svc, applied) = service(dir.path());
+        let screens = vec![screen("1", 120, 80), screen("2", 160, 90)];
+        let live = screens.clone();
+        svc.hooks.displays = Box::new(move || live.clone());
+        svc.config.per_display = true;
+        svc.config.sources = vec![SourceId::Favorites];
+        favorites(&svc, &["Ann - a1.png", "Bo - b2.png", "Cy - c3.png"]);
+        let left = photo(&svc, "left", Some(screens[0].clone()));
+        let right = photo(&svc, "right", Some(screens[1].clone()));
+        // Real images: GNOME (Linux) stitches every display's photo.
+        for w in [&left, &right] {
+            let (w_px, h_px) = w.display.as_ref().map(|d| (d.width, d.height)).unwrap();
+            source::write_jpeg(&image::RgbImage::new(w_px, h_px), &w.file).unwrap();
+        }
+        svc.state.current = Some(Set {
+            photos: vec![left.clone(), right.clone()],
+            spanned: None,
+        });
+        svc.state.last_rotated = 42;
+
+        svc.handle(Command::Next(Some(1)));
+
+        let current = svc.state.current.clone().unwrap();
+        assert_eq!(current.photos[0], left, "the other display keeps its photo");
+        assert_ne!(current.photos[1].id, "right");
+        assert_eq!(current.photos[1].display.as_ref().unwrap().id, "2");
+        assert_eq!(
+            image::image_dimensions(&current.photos[1].file).unwrap(),
+            (160, 90)
+        );
+        assert!(!right.file.exists(), "the replaced photo is deleted");
+        assert_eq!(svc.state.last_rotated, 42, "the schedule is unchanged");
+        assert_eq!(applied.lock().unwrap().len(), 1);
+
+        // The prefetched set is complete again after a one-display change
+        // used its photo.
+        svc.prefetch_if_needed();
+        let next = svc.state.next.clone().unwrap();
+        assert!(next.fits(&screens, true));
+        svc.handle(Command::Next(Some(0)));
+        let after = svc.state.current.clone().unwrap();
+        assert_eq!(after.photos[1], current.photos[1]);
+        assert_eq!(
+            after.photos[0].id, next.photos[0].id,
+            "used the prefetched photo"
+        );
+        svc.prefetch_if_needed();
+        assert!(svc.state.next.as_ref().unwrap().fits(&screens, true));
+    }
+
+    #[test]
+    fn next_on_one_display_falls_back_to_all_when_shared() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut svc, applied) = service(dir.path());
+        svc.config.sources = vec![SourceId::Favorites];
+        favorites(&svc, &["Ann - a1.png"]);
+        svc.state.current = Some(cached(&svc, "shared"));
+        svc.handle(Command::Next(Some(0)));
+        assert!(svc.snapshot().error.is_none());
+        assert_eq!(applied.lock().unwrap().len(), 1);
+        assert_ne!(svc.state.current.as_ref().unwrap().photos[0].id, "shared");
     }
 
     #[test]

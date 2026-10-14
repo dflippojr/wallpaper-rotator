@@ -71,7 +71,7 @@ fn rotate(paths: Paths) -> Result<()> {
         notify: Box::new(|_| {}),
     };
     let mut service = Service::new(paths.clone(), hooks)?;
-    service.handle(Command::Next);
+    service.handle(Command::Next(None));
     let snap = service.snapshot();
     if let Some(error) = snap.error {
         bail!(error);
