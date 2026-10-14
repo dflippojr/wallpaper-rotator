@@ -1,0 +1,148 @@
+:root {
+  --bg: #2b2b2d;
+  --panel: #3a3a3d;
+  --text: #f2f2f3;
+  --muted: #a3a3a8;
+  --accent: #4d4d52;
+  --accent-hover: #5a5a60;
+  --error: #ff8a80;
+  --radius: 10px;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Ubuntu, Cantarell, sans-serif;
+  user-select: none;
+  overflow: hidden;
+}
+
+svg { width: 18px; height: 18px; display: block; }
+button { font: inherit; color: inherit; cursor: pointer; }
+a { color: inherit; text-decoration: none; font-weight: 600; }
+a:hover { text-decoration: underline; }
+[hidden] { display: none !important; }
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+}
+.brand { display: flex; align-items: center; gap: 8px; font-weight: 700; }
+nav { display: flex; gap: 6px; }
+.icon {
+  background: none;
+  border: 0;
+  padding: 4px;
+  border-radius: 6px;
+  color: var(--muted);
+}
+.icon:hover, .icon:focus-visible { color: var(--text); background: var(--panel); }
+
+.photo {
+  position: relative;
+  height: 212px;
+  background: var(--panel);
+  overflow: hidden;
+}
+.photo img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.photo img:not([src]) { visibility: hidden; }
+.empty {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--muted);
+}
+.next {
+  position: absolute;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  width: 46px; height: 46px;
+  border: 0;
+  border-radius: 12px;
+  background: rgba(30, 30, 32, 0.6);
+  color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  backdrop-filter: blur(6px);
+  transition: background 0.15s;
+}
+.next svg { width: 24px; height: 24px; }
+.next:hover, .next:focus-visible { background: rgba(30, 30, 32, 0.85); }
+.next.spinning svg { animation: spin 0.9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .next.spinning svg { animation: none; opacity: 0.5; } }
+
+.location {
+  position: absolute;
+  left: 12px; right: 12px; bottom: 10px;
+  display: flex; align-items: center; gap: 6px;
+  font-weight: 600;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
+}
+.location svg { width: 14px; height: 14px; flex: none; }
+.location span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.status {
+  min-height: 18px;
+  margin: 10px 14px 0;
+  color: var(--muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.status.error { color: var(--error); white-space: normal; }
+
+.primary {
+  display: block;
+  width: calc(100% - 28px);
+  margin: 8px 14px 0;
+  padding: 11px;
+  border: 0;
+  border-radius: var(--radius);
+  background: var(--accent);
+  font-weight: 600;
+}
+.primary:hover, .primary:focus-visible { background: var(--accent-hover); }
+.primary:disabled { opacity: 0.5; cursor: default; }
+
+footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px;
+}
+footer a { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Settings */
+form { padding: 0 14px 14px; overflow-y: auto; height: calc(100% - 50px); }
+h2 { font-size: 14px; margin: 0 0 10px; }
+label { display: block; margin-bottom: 10px; color: var(--muted); font-size: 12px; }
+input[type=text], input[type=password], input[type=number], select {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  padding: 7px 9px;
+  border: 1px solid #4a4a4f;
+  border-radius: 7px;
+  background: #1f1f21;
+  color: var(--text);
+  font: inherit;
+}
+input:focus, select:focus { outline: 2px solid #7a7a82; outline-offset: 0; }
+.row { display: flex; gap: 10px; }
+.row label { flex: 1; }
+.check { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: 13px; }
+.hint { margin: -4px 0 10px; color: var(--muted); font-size: 11px; }
+.hint a { text-decoration: underline; }
+.muted { color: #808086; }
+.actions { display: flex; gap: 8px; margin-top: 6px; }
+.actions button { flex: 1; margin: 0; width: auto; padding: 9px; border-radius: var(--radius); border: 0; background: var(--panel); }
+.actions .primary { background: var(--accent); }
+.link { display: block; margin: 12px auto 0; background: none; border: 0; color: var(--muted); font-size: 12px; }
+.link:hover { color: var(--text); text-decoration: underline; }

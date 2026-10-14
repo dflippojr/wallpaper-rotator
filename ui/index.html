@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Wallpaper Rotator</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="4.5" width="19" height="15" rx="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M5 17l4.5-6 3 3.5 2-2.5L19 17z" fill="currentColor"/><circle cx="16.5" cy="8.5" r="1.6" fill="currentColor"/></svg>
+      <span>Wallpaper Rotator</span>
+    </div>
+    <nav>
+      <button id="btn-folder" class="icon" title="Open favorites folder" aria-label="Open favorites folder">
+        <svg viewBox="0 0 24 24"><path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z" fill="currentColor"/></svg>
+      </button>
+      <button id="btn-settings" class="icon" title="Settings" aria-label="Settings">
+        <svg viewBox="0 0 24 24"><path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7zm8.4 4.6l1.6 1.2-1.8 3.2-1.9-.7a7.6 7.6 0 0 1-1.6.9l-.3 2h-3.6l-.3-2a7.6 7.6 0 0 1-1.6-.9l-1.9.7L5.2 14.3l1.6-1.2a7.4 7.4 0 0 1 0-2.2L5.2 9.7 7 6.5l1.9.7a7.6 7.6 0 0 1 1.6-.9l.3-2h3.6l.3 2c.6.2 1.1.5 1.6.9l1.9-.7 1.8 3.2-1.6 1.2c.1.7.1 1.5 0 2.2z" fill="currentColor"/></svg>
+      </button>
+    </nav>
+  </header>
+
+  <main id="view-main">
+    <div class="photo" id="photo">
+      <img id="preview" alt="">
+      <div class="empty" id="empty">No wallpaper yet</div>
+      <button id="btn-next" class="next" title="Next wallpaper" aria-label="Next wallpaper">
+        <svg viewBox="0 0 24 24"><path d="M17.7 6.3A8 8 0 1 0 20 12h-2a6 6 0 1 1-1.8-4.2L13 11h7V4z" fill="currentColor"/></svg>
+      </button>
+      <div class="location" id="location" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a7 7 0 0 0-7 7c0 5.2 7 13 7 13s7-7.8 7-13a7 7 0 0 0-7-7zm0 9.5A2.5 2.5 0 1 1 12 6.5a2.5 2.5 0 0 1 0 5z" fill="currentColor"/></svg>
+        <span id="location-text"></span>
+      </div>
+    </div>
+
+    <p class="status" id="status" role="status" aria-live="polite"></p>
+
+    <button id="btn-favorite" class="primary">Save to Favorites</button>
+
+    <footer>
+      <a href="#" id="credit">&nbsp;</a>
+      <a href="#" id="unsplash">Unsplash</a>
+    </footer>
+  </main>
+
+  <form id="view-settings" hidden>
+    <h2>Settings</h2>
+    <label>Unsplash access key
+      <input id="f-key" type="password" autocomplete="off" placeholder="Leave blank to keep the current key">
+    </label>
+    <p class="hint" id="key-hint">Get a free key at <a href="#" id="dev-link">unsplash.com/developers</a> (create an app, copy its Access Key).</p>
+    <label>Search
+      <input id="f-query" type="text" placeholder="e.g. mountains, ocean, city at night">
+    </label>
+    <label>Topics <span class="muted">(used when Search is empty)</span>
+      <input id="f-topics" type="text" placeholder="wallpapers, nature">
+    </label>
+    <div class="row">
+      <label>Change every
+        <select id="f-interval">
+          <option value="60">hour</option>
+          <option value="360">6 hours</option>
+          <option value="1440">day</option>
+          <option value="10080">week</option>
+          <option value="0">only when I ask</option>
+        </select>
+      </label>
+      <label>Cache cap (MB)
+        <input id="f-cap" type="number" min="20" step="10">
+      </label>
+    </div>
+    <label class="check"><input id="f-paused" type="checkbox"> Pause rotation</label>
+    <label class="check"><input id="f-login" type="checkbox"> Start at login</label>
+    <div class="actions">
+      <button type="button" id="btn-cancel">Cancel</button>
+      <button type="submit" class="primary">Save</button>
+    </div>
+    <button type="button" id="btn-quit" class="link">Quit Wallpaper Rotator</button>
+  </form>
+
+  <script src="app.js"></script>
+</body>
+</html>
