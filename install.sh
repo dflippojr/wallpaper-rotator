@@ -298,7 +298,7 @@ if [ "$UNINSTALL" = 1 ]; then
     progress 30 "Removing start at login"
     agent="$HOME/Library/LaunchAgents/$APP_NAME.plist"
     if [ -e "$agent" ]; then
-      run launchctl unload "$agent" 2>/dev/null || true
+      run launchctl unload "$agent" || true
       remove "$agent"
     fi
     progress 50 "Removing the app"
