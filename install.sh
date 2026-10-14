@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Installs or updates Wallpaper Rotator on macOS or Linux (Ubuntu GNOME).
 #
+#   curl -fsSL https://raw.githubusercontent.com/dflippojr/wallpaper-rotator/main/install.sh | bash
+#   wget -qO- https://raw.githubusercontent.com/dflippojr/wallpaper-rotator/main/install.sh | bash
+#
+# Options go after `bash -s --`, or after the file name when run from a clone:
 #   bash install.sh [--dry-run] [--from-source] [--force] [--version vX.Y.Z]
 #
 # It checks the machine and what is already installed, installs only the
@@ -16,10 +20,14 @@
 #   --version      install a specific release tag instead of the latest
 #
 # Run it again any time to update.
+
+# Everything is inside main(), so when this arrives through a pipe bash reads
+# all of it before running anything, and no command can eat the rest of the
+# script from stdin.
+main() {
 set -euo pipefail
 
 REPO=dflippojr/wallpaper-rotator
-OWNER=dflippojr
 APP_NAME="Wallpaper Rotator"
 # The release's .deb and AppImage are built on Ubuntu 24.04 and need this glibc.
 BUILT_GLIBC=2.39
@@ -31,7 +39,7 @@ while [ $# -gt 0 ]; do
     --from-source) FROM_SOURCE=1 ;;
     --force) FORCE=1 ;;
     --version) TAG="${2:?--version needs a tag}"; shift ;;
-    -h|--help) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) echo "options: --dry-run --from-source --force --version vX.Y.Z (details at the top of install.sh)"; exit 0 ;;
     *) echo "unknown option: $1 (try --help)" >&2; exit 2 ;;
   esac
   shift
@@ -46,12 +54,13 @@ warn() { printf '\033[33mwarning:\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 run() {
-  if [ "$DRY_RUN" = 1 ]; then note "would run: $*"; else "$@"; fi
+  if [ "$DRY_RUN" = 1 ]; then note "would run: $*"; else "$@" </dev/null; fi
 }
 # Prompts must read the terminal, not stdin: stdin may be this script.
 tty_in() { if [ -r /dev/tty ]; then "$@" </dev/tty; else "$@"; fi; }
 # Sorts version numbers; true if $1 >= $2.
-version_ge() { [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -n1)" = "$2" ]; }
+# (sed -n 1p rather than head, which can cut the pipe and trip pipefail.)
+version_ge() { [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | sed -n 1p)" = "$2" ]; }
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
@@ -128,48 +137,14 @@ if [ "$PLATFORM" = linux ] && [ "$PKG" = deb ]; then
   if deb_installed ca-certificates; then ok "ca-certificates"; else miss "ca-certificates"; apt_install ca-certificates; fi
 fi
 
-# The GitHub CLI downloads from the private repo.
-if have gh; then
-  ok "GitHub CLI ($(gh --version | head -n1 | awk '{print $3}'))"
+# Downloads use curl, or wget where curl is missing (stock Ubuntu desktops).
+if have curl; then
+  ok "curl"
+elif have wget; then
+  ok "wget"
 else
-  miss "GitHub CLI"
-  if [ "$PLATFORM" = linux ] && [ "$PKG" = deb ]; then
-    apt_install gh
-  elif [ "$PLATFORM" = macos ] && have brew; then
-    run brew install gh
-  else
-    die "install the GitHub CLI from https://cli.github.com, then rerun this"
-  fi
-fi
-
-# A GH_TOKEN already in the environment wins. Otherwise prefer the repo
-# owner's account even when another account is active (the MacBook's active
-# account is a work one). Old gh versions can't print tokens; then gh's own
-# login is used as is.
-gh_token() { gh auth token -u "$OWNER" 2>/dev/null || gh auth token 2>/dev/null || true; }
-GH_OK=0
-if have gh; then
-  [ -n "${GH_TOKEN:-}" ] || GH_TOKEN=$(gh_token)
-  if [ -n "$GH_TOKEN" ]; then export GH_TOKEN; else unset GH_TOKEN; fi
-  if gh api "repos/$REPO" --silent >/dev/null 2>&1; then
-    GH_OK=1
-  elif [ "$DRY_RUN" = 1 ]; then
-    miss "GitHub access to $REPO"
-    note "would run: gh auth login"
-  else
-    miss "GitHub access to $REPO"
-    say "Log in to GitHub as $OWNER (choose GitHub.com, HTTPS, web browser)"
-    unset GH_TOKEN
-    tty_in gh auth login
-    GH_TOKEN=$(gh_token)
-    if [ -n "$GH_TOKEN" ]; then export GH_TOKEN; else unset GH_TOKEN; fi
-    if err=$(gh api "repos/$REPO" --silent 2>&1); then
-      GH_OK=1
-    else
-      die "can't reach $REPO on GitHub: $err. If it says 'Not Found', log in as $OWNER: gh auth login"
-    fi
-  fi
-  [ "$GH_OK" = 1 ] && ok "GitHub access to $REPO"
+  miss "curl or wget"
+  if [ "$PLATFORM" = linux ] && [ "$PKG" = deb ]; then apt_install curl; else die "install curl, then rerun this"; fi
 fi
 
 if [ "$FROM_SOURCE" = 1 ]; then
@@ -214,6 +189,25 @@ fi
 
 # ---------------------------------------------------------------- versions --
 
+# api URL: a GitHub API call. Uses GITHUB_TOKEN when set (CI), which lifts
+# the 60-requests-an-hour limit for anonymous calls.
+api() {
+  if [ -n "${GITHUB_TOKEN:-}" ] && have curl; then
+    curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" "$1"
+  else
+    fetch "$1"
+  fi
+}
+
+# fetch URL [FILE]: prints the URL's body, or saves it to FILE.
+fetch() {
+  if have curl; then
+    if [ $# -gt 1 ]; then curl -fsSL -o "$2" "$1"; else curl -fsSL "$1"; fi
+  else
+    if [ $# -gt 1 ]; then wget -q -O "$2" "$1"; else wget -q -O - "$1"; fi
+  fi
+}
+
 installed_version() {
   if [ "$PLATFORM" = macos ]; then
     defaults read "/Applications/$APP_NAME.app/Contents/Info" CFBundleShortVersionString 2>/dev/null || true
@@ -224,9 +218,15 @@ installed_version() {
   fi
 }
 CURRENT=$(installed_version)
-if [ "$FROM_SOURCE" = 0 ] && [ "$GH_OK" = 1 ]; then
-  [ -n "$TAG" ] || TAG=$(gh release view --repo "$REPO" --json tagName -q .tagName 2>/dev/null) \
-    || die "no releases found in $REPO. Rerun with --from-source."
+RELEASE="$TMP/release.json"
+if [ "$FROM_SOURCE" = 0 ] && { have curl || have wget; }; then
+  if [ -n "$TAG" ]; then api="https://api.github.com/repos/$REPO/releases/tags/$TAG"
+  else api="https://api.github.com/repos/$REPO/releases/latest"; fi
+  api "$api" > "$RELEASE" \
+    || die "couldn't read the release from GitHub ($api). Check the connection, or rerun with --from-source."
+  # GitHub's JSON has one field per line, so sed can pick fields out.
+  TAG=$(sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' "$RELEASE" | sed -n 1p)
+  [ -n "$TAG" ] || die "no release found in $REPO. Rerun with --from-source."
 fi
 if [ "$FROM_SOURCE" = 1 ]; then TARGET="a build from source"; else TARGET=${TAG:-the latest release}; fi
 say "Installed: ${CURRENT:-none}.  Installing: $TARGET"
@@ -308,21 +308,24 @@ EOF
   fi
 }
 
-download() { # $1 = glob pattern for the release asset
-  say "Downloading ${TAG:-the latest release} ($1)"
+download() { # $1 = end of the release file's name, such as _amd64.deb
+  url=$(sed -n 's/.*"browser_download_url": *"\([^"]*\)".*/\1/p' "$RELEASE" 2>/dev/null \
+    | grep -F -- "$1" | sed -n 1p || true)
+  say "Downloading ${TAG:-the latest release} (${url##*/})"
   if [ "$DRY_RUN" = 1 ]; then
-    note "would run: gh release download ${TAG:-<latest>} --repo $REPO --pattern '$1'"
-    echo "$TMP/$1"
+    note "would download: ${url:-the release file ending in $1}"
+    echo "$TMP/${url##*/}"
     return
   fi
-  gh release download "$TAG" --repo "$REPO" --pattern "$1" --dir "$TMP"
-  find "$TMP" -maxdepth 1 -type f -name "$1" | head -n1
+  [ -n "$url" ] || die "release $TAG has no file ending in $1. Rerun with --from-source."
+  fetch "$url" "$TMP/${url##*/}"
+  echo "$TMP/${url##*/}"
 }
 
 if [ "$FROM_SOURCE" = 0 ]; then
   case "$PLATFORM-${PKG:-}" in
     macos-*)
-      dmg=$(download '*aarch64.dmg')
+      dmg=$(download '_aarch64.dmg')
       if [ "$DRY_RUN" = 1 ]; then
         install_macos_app "/Volumes/(dmg)/$APP_NAME.app"
       else
@@ -333,8 +336,8 @@ if [ "$FROM_SOURCE" = 0 ]; then
         hdiutil detach -quiet "$mnt"
       fi
       ;;
-    linux-deb) install_deb "$(download '*_amd64.deb')" ;;
-    linux-appimage) install_appimage "$(download '*_amd64.AppImage')" "${TAG#v}" ;;
+    linux-deb) install_deb "$(download '_amd64.deb')" ;;
+    linux-appimage) install_appimage "$(download '_amd64.AppImage')" "${TAG#v}" ;;
   esac
 else
   # Build in the current clone if run from one, else in ~/wallpaper-rotator.
@@ -346,7 +349,7 @@ else
     run git -C "$src" pull --ff-only
   else
     say "Downloading the source to $src"
-    run gh repo clone "$REPO" "$src"
+    run git clone "https://github.com/$REPO.git" "$src"
   fi
   say "Building (the first build takes several minutes)"
   if [ "$PLATFORM" = macos ]; then
@@ -354,7 +357,7 @@ else
     install_macos_app "$src/target/release/bundle/macos/$APP_NAME.app"
   else
     run sh -c "cd '$src/app' && cargo tauri build --bundles deb"
-    deb=$(ls -t "$src"/target/release/bundle/deb/*.deb 2>/dev/null | head -n1 || true)
+    deb=$(ls -t "$src"/target/release/bundle/deb/*.deb 2>/dev/null | sed -n 1p || true)
     install_deb "${deb:-$src/target/release/bundle/deb/(built).deb}"
   fi
 fi
@@ -370,3 +373,6 @@ else
     note "Its icon is in the menu bar. On a first install, click it and add your Unsplash key under the gear."
   fi
 fi
+}
+
+main "$@"

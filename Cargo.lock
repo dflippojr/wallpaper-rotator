@@ -2999,7 +2999,7 @@ dependencies = [
 
 [[package]]
 name = "rotator-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "directories",
@@ -4441,7 +4441,7 @@ dependencies = [
 
 [[package]]
 name = "wallpaper-rotator"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "rotator-core",

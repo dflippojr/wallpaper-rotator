@@ -20,38 +20,24 @@ Other rotators save every photo they cycle through. This one keeps only the wall
 
 ## Install
 
-The installer checks your machine and which dependencies are already there, installs only what's missing, then installs the latest release. **Run the same command again to update.** The repo is private, so the installer downloads through the GitHub CLI, logged in as `dflippojr`.
+One command per system. The installer checks your machine and which dependencies are already there, installs only what's missing, then installs the latest release. **Run the same command again to update.**
 
-### macOS (Apple silicon) and Ubuntu GNOME
+**macOS (Apple silicon or Intel):**
+```sh
+curl -fsSL https://raw.githubusercontent.com/dflippojr/wallpaper-rotator/main/install.sh | bash
+```
 
-1. Install the GitHub CLI if you don't have it:
-   - **macOS:** `brew install gh`, or the installer from <https://cli.github.com>.
-   - **Ubuntu:** `sudo apt update && sudo apt install -y gh`
-2. Log in as `dflippojr`. Skip this if that account is already logged in; it doesn't have to be the active account.
-   ```sh
-   gh auth login
-   ```
-3. Run the installer:
-   ```sh
-   bash <(GH_TOKEN=$(gh auth token -u dflippojr) gh api -H "Accept: application/vnd.github.raw" repos/dflippojr/wallpaper-rotator/contents/install.sh)
-   ```
+**Ubuntu GNOME** (stock Ubuntu has `wget`, not `curl`):
+```sh
+wget -qO- https://raw.githubusercontent.com/dflippojr/wallpaper-rotator/main/install.sh | bash
+```
 
-### Windows 10 or 11
+**Windows 10 or 11** (PowerShell):
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/dflippojr/wallpaper-rotator/main/install.ps1)))
+```
 
-In PowerShell:
-
-1. Install the GitHub CLI if you don't have it, then open a new PowerShell window:
-   ```powershell
-   winget install --id GitHub.cli -e
-   ```
-2. Log in as `dflippojr`:
-   ```powershell
-   gh auth login
-   ```
-3. Run the installer:
-   ```powershell
-   $env:GH_TOKEN = gh auth token -u dflippojr; & ([scriptblock]::Create((gh api -H "Accept: application/vnd.github.raw" repos/dflippojr/wallpaper-rotator/contents/install.ps1 | Out-String)))
-   ```
+Then add your Unsplash key (see Setup above): click the tray or menu-bar icon (on GNOME choose **Show**), then the gear.
 
 ### What the installer does
 
@@ -68,8 +54,12 @@ In PowerShell:
 Before installing, the app is stopped if it's running, and it's started again afterwards. Your settings and favorites are kept.
 
 Options:
-- **macOS and Linux:** add them after the command, for example `bash <(...) --dry-run`. `--dry-run` reports what it finds and would do without changing anything, `--force` reinstalls the same version (or continues on a desktop other than GNOME), `--from-source` builds locally, and `--version v0.2.0` picks a release.
-- **Windows:** use `& ([scriptblock]::Create(...)) -DryRun`. `-Force` and `-Version` also work.
+- **macOS and Linux:** end the command with `| bash -s -- --dry-run` instead of `| bash`.
+  - `--dry-run` reports what it finds and would do, without changing anything.
+  - `--force` reinstalls the same version, or continues on a desktop other than GNOME.
+  - `--from-source` builds locally.
+  - `--version v0.2.0` picks a release.
+- **Windows:** add `-DryRun` after the last parenthesis. `-Force` and `-Version v0.2.0` also work.
 
 From a clone of the repo, run `bash install.sh` or `powershell -ExecutionPolicy Bypass -File install.ps1`.
 
@@ -84,7 +74,7 @@ This is what the installer automates. Use it if the installer fails. Tested on U
 2. Install the build tools and libraries:
    ```sh
    sudo apt update
-   sudo apt install -y build-essential curl git gh libwebkit2gtk-4.1-dev \
+   sudo apt install -y build-essential curl git libwebkit2gtk-4.1-dev \
      libayatana-appindicator3-dev librsvg2-dev libssl-dev libxdo-dev
    ```
 3. Install Rust. It should end with "Rust is installed now. Great!":
@@ -100,32 +90,28 @@ This is what the installer automates. Use it if the installer fails. Tested on U
    ```sh
    cargo --version
    ```
-6. Sign in to GitHub. The repo is private, so use the account that owns it: choose GitHub.com, then HTTPS, then log in with a web browser.
+6. Download the code:
    ```sh
-   gh auth login
-   ```
-7. Download the code:
-   ```sh
-   gh repo clone dflippojr/wallpaper-rotator ~/wallpaper-rotator
+   git clone https://github.com/dflippojr/wallpaper-rotator.git ~/wallpaper-rotator
    cd ~/wallpaper-rotator
    ```
-8. Install the Tauri build tool. It compiles from source, which takes a few minutes:
+7. Install the Tauri build tool. It compiles from source, which takes a few minutes:
    ```sh
    cargo install tauri-cli --version "^2" --locked
    ```
-9. Build the installer package:
+8. Build the installer package:
    ```sh
    (cd app && cargo tauri build --bundles deb)
    ```
-10. Install it:
+9. Install it:
     ```sh
     sudo apt install -y ./target/release/bundle/deb/*.deb
     ```
-11. Start it from Activities (search for "Wallpaper Rotator"), or from the terminal:
+10. Start it from Activities (search for "Wallpaper Rotator"), or from the terminal:
     ```sh
     wallpaper-rotator &
     ```
-12. Click the new icon in the top bar, choose **Show**, open Settings (the gear) and paste your Unsplash access key (see Setup above). The first wallpaper arrives within a few seconds.
+11. Click the new icon in the top bar, choose **Show**, open Settings (the gear) and paste your Unsplash access key (see Setup above). The first wallpaper arrives within a few seconds.
 
 To update later:
 ```sh
@@ -159,16 +145,16 @@ The headless CLI is handy for testing: `cargo run -p rotator-core --bin wallpape
 
 ## Releasing
 
-`install.sh` and `install.ps1` install the files attached to the latest GitHub release. To publish a new version:
+The installers fetch the files attached to the latest GitHub release. To publish a new version:
 
-1. Bump `version` in `Cargo.toml` and `app/tauri.conf.json`.
-2. Build the installers into `dist/`:
+1. Bump `version` in `Cargo.toml` and `app/tauri.conf.json`, and commit.
+2. Tag and push:
    ```sh
-   scripts/build-release.sh linux     # .deb and .AppImage, in Docker
-   scripts/build-release.sh windows   # setup .exe, cross-built in Docker (no MSVC needed)
-   scripts/build-release.sh macos     # .dmg, on the Mac
+   git tag v0.3.0 && git push origin v0.3.0
    ```
-3. Publish them: `gh release create vX.Y.Z dist/* --title vX.Y.Z --notes "..."`, adding the `.dmg` from the Mac's `dist/`.
+   The **Release** workflow checks that the tag matches the version, builds the `.deb` and AppImage (Ubuntu 24.04), the `.dmg` (Apple silicon) and the Windows setup `.exe`, uploads them, and publishes the release.
+
+To build the installers by hand instead, use `scripts/build-release.sh linux|windows|macos`. Linux and Windows build in Docker (Windows is cross-built, so no MSVC is needed); the macOS build runs on a Mac. Then publish with `gh release create vX.Y.Z dist/*`.
 
 ## How it works
 
