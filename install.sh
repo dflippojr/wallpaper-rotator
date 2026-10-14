@@ -72,11 +72,17 @@ case "$OS" in
     ;;
   Linux)
     PLATFORM=linux
-    if grep -qi microsoft /proc/version 2>/dev/null || [ -n "${WSL_DISTRO_NAME:-}" ]; then
+    # WSL's own markers. The kernel name alone isn't enough: Docker Desktop
+    # containers also run on the WSL kernel.
+    if [ -n "${WSL_DISTRO_NAME:-}${WSL_INTEROP:-}" ] || [ -d /mnt/wsl ] \
+       || ls /proc/sys/fs/binfmt_misc/WSLInterop* >/dev/null 2>&1; then
       die "this is WSL. Linux here has no desktop of its own, so the app can't set a wallpaper. Install it on Windows instead: see install.ps1 in the README."
     fi
     distro=$( (. /etc/os-release 2>/dev/null && echo "${PRETTY_NAME:-Linux}") || echo Linux)
-    glibc=$(ldd --version 2>/dev/null | head -n1 | grep -oE '[0-9]+\.[0-9]+$' || echo 0)
+    # sed reads all of ldd's output; `head` would cut the pipe and, with
+    # pipefail, turn a good answer into a failure.
+    glibc=$(ldd --version 2>/dev/null | sed -n '1s/.* \([0-9][0-9]*\.[0-9][0-9]*\)$/\1/p')
+    glibc=${glibc:-0}
     note "$distro on $ARCH, glibc $glibc, desktop: ${XDG_CURRENT_DESKTOP:-unknown}"
     if [ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
       warn "no graphical session found (DISPLAY and WAYLAND_DISPLAY are unset). Run this from a terminal on the desktop."
@@ -117,6 +123,11 @@ deb_installed() {
 
 say "Checking what's already installed"
 
+# HTTPS needs the CA certificates (missing only on stripped-down systems).
+if [ "$PLATFORM" = linux ] && [ "$PKG" = deb ]; then
+  if deb_installed ca-certificates; then ok "ca-certificates"; else miss "ca-certificates"; apt_install ca-certificates; fi
+fi
+
 # The GitHub CLI downloads from the private repo.
 if have gh; then
   ok "GitHub CLI ($(gh --version | head -n1 | awk '{print $3}'))"
@@ -131,28 +142,34 @@ else
   fi
 fi
 
-# Use the repo owner's account even when another account is active (the
-# MacBook's active account is a work one), else whatever is logged in.
-if [ "$DRY_RUN" = 0 ] || have gh; then
-  GH_TOKEN=$(gh auth token -u "$OWNER" 2>/dev/null || gh auth token 2>/dev/null || true)
-  if [ -z "$GH_TOKEN" ]; then
-    miss "GitHub login"
-    if [ "$DRY_RUN" = 1 ]; then
-      note "would run: gh auth login"
+# A GH_TOKEN already in the environment wins. Otherwise prefer the repo
+# owner's account even when another account is active (the MacBook's active
+# account is a work one). Old gh versions can't print tokens; then gh's own
+# login is used as is.
+gh_token() { gh auth token -u "$OWNER" 2>/dev/null || gh auth token 2>/dev/null || true; }
+GH_OK=0
+if have gh; then
+  [ -n "${GH_TOKEN:-}" ] || GH_TOKEN=$(gh_token)
+  if [ -n "$GH_TOKEN" ]; then export GH_TOKEN; else unset GH_TOKEN; fi
+  if gh api "repos/$REPO" --silent >/dev/null 2>&1; then
+    GH_OK=1
+  elif [ "$DRY_RUN" = 1 ]; then
+    miss "GitHub access to $REPO"
+    note "would run: gh auth login"
+  else
+    miss "GitHub access to $REPO"
+    say "Log in to GitHub as $OWNER (choose GitHub.com, HTTPS, web browser)"
+    unset GH_TOKEN
+    tty_in gh auth login
+    GH_TOKEN=$(gh_token)
+    if [ -n "$GH_TOKEN" ]; then export GH_TOKEN; else unset GH_TOKEN; fi
+    if err=$(gh api "repos/$REPO" --silent 2>&1); then
+      GH_OK=1
     else
-      say "Log in to GitHub as $OWNER (choose GitHub.com, HTTPS, web browser)"
-      tty_in gh auth login
-      GH_TOKEN=$(gh auth token -u "$OWNER" 2>/dev/null || gh auth token)
+      die "can't reach $REPO on GitHub: $err. If it says 'Not Found', log in as $OWNER: gh auth login"
     fi
   fi
-  export GH_TOKEN
-  if [ -n "$GH_TOKEN" ]; then
-    if gh api "repos/$REPO" --silent 2>/dev/null; then
-      ok "GitHub access to $REPO"
-    else
-      die "the GitHub account logged in can't see $REPO. Run: gh auth login (as $OWNER)"
-    fi
-  fi
+  [ "$GH_OK" = 1 ] && ok "GitHub access to $REPO"
 fi
 
 if [ "$FROM_SOURCE" = 1 ]; then
@@ -207,11 +224,12 @@ installed_version() {
   fi
 }
 CURRENT=$(installed_version)
-if [ "$FROM_SOURCE" = 0 ] && [ -n "${GH_TOKEN:-}" ]; then
+if [ "$FROM_SOURCE" = 0 ] && [ "$GH_OK" = 1 ]; then
   [ -n "$TAG" ] || TAG=$(gh release view --repo "$REPO" --json tagName -q .tagName 2>/dev/null) \
     || die "no releases found in $REPO. Rerun with --from-source."
 fi
-say "Installed: ${CURRENT:-none}.  Installing: ${TAG:-source build}"
+if [ "$FROM_SOURCE" = 1 ]; then TARGET="a build from source"; else TARGET=${TAG:-the latest release}; fi
+say "Installed: ${CURRENT:-none}.  Installing: $TARGET"
 if [ -n "$CURRENT" ] && [ -n "$TAG" ] && [ "v$CURRENT" = "$TAG" ] && [ "$FORCE" = 0 ]; then
   say "Already up to date. Use --force to reinstall."
   exit 0
@@ -246,7 +264,11 @@ install_macos_app() { # $1 = path to "Wallpaper Rotator.app"
   run ditto "$1" "/Applications/$APP_NAME.app"
   # Built without an Apple Developer ID; drop the download quarantine flag so
   # Gatekeeper doesn't block the first launch.
-  run xattr -dr com.apple.quarantine "/Applications/$APP_NAME.app" 2>/dev/null || true
+  if [ "$DRY_RUN" = 1 ]; then
+    note "would run: xattr -dr com.apple.quarantine /Applications/$APP_NAME.app"
+  else
+    xattr -dr com.apple.quarantine "/Applications/$APP_NAME.app" 2>/dev/null || true
+  fi
 }
 
 install_deb() { # $1 = path to the .deb
@@ -287,7 +309,7 @@ EOF
 }
 
 download() { # $1 = glob pattern for the release asset
-  say "Downloading $TAG ($1)"
+  say "Downloading ${TAG:-the latest release} ($1)"
   if [ "$DRY_RUN" = 1 ]; then
     note "would run: gh release download ${TAG:-<latest>} --repo $REPO --pattern '$1'"
     echo "$TMP/$1"
@@ -343,8 +365,8 @@ if [ "$DRY_RUN" = 1 ]; then
 else
   say "Done. $APP_NAME $(installed_version) is installed."
   if [ "$PLATFORM" = linux ]; then
-    note "Its icon is in the top bar: click it, choose Show, then the gear to add your Unsplash key."
+    note "Its icon is in the top bar: click it and choose Show. On a first install, add your Unsplash key under the gear."
   else
-    note "Its icon is in the menu bar: click it, then the gear to add your Unsplash key."
+    note "Its icon is in the menu bar. On a first install, click it and add your Unsplash key under the gear."
   fi
 fi
