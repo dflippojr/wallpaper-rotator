@@ -1,12 +1,9 @@
 //! Stitches per-display photos into one image for GNOME's `spanned` mode,
 //! which stretches a single picture across the bounding box of all monitors.
 
-use std::fs::{self, File};
-use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
-use image::codecs::jpeg::JpegEncoder;
 use image::imageops::{self, FilterType};
 use image::RgbImage;
 
@@ -48,20 +45,7 @@ pub fn compose(parts: &[(Display, PathBuf)], dest: &Path) -> Result<()> {
         );
     }
 
-    let part = dest.with_extension("jpg.part");
-    let result = (|| -> Result<()> {
-        let mut out = BufWriter::new(File::create(&part)?);
-        JpegEncoder::new_with_quality(&mut out, 90).encode_image(&canvas)?;
-        out.into_inner()?.sync_all()?;
-        Ok(())
-    })();
-    match result {
-        Ok(()) => Ok(fs::rename(&part, dest)?),
-        Err(e) => {
-            let _ = fs::remove_file(&part);
-            Err(e.context("could not write the stitched wallpaper"))
-        }
-    }
+    crate::source::write_jpeg(&canvas, dest).context("could not write the stitched wallpaper")
 }
 
 #[cfg(test)]

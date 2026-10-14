@@ -106,6 +106,7 @@ nav { display: flex; gap: 6px; }
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
 }
 .location svg { width: 14px; height: 14px; flex: none; }
+.location.caption svg { display: none; }
 .location span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .status {
@@ -163,6 +164,18 @@ form > .check { margin: 0 0 6px; }
 .hint { margin: -3px 0 7px; color: var(--muted); font-size: 11px; }
 .hint a { text-decoration: underline; }
 .muted { color: #808086; }
+.sources {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 10px;
+  margin: 0 0 6px;
+  padding: 0;
+  border: 0;
+}
+.sources legend { padding: 0; margin-bottom: 6px; color: var(--muted); font-size: 12px; }
+.hint.error { color: var(--error); margin: 0; }
+.hint.error:empty { display: none; }
+footer a.plain { pointer-events: none; font-weight: 400; color: var(--muted); }
 .actions { display: flex; gap: 8px; margin-top: 6px; }
 .actions button { flex: 1; margin: 0; width: auto; padding: 9px; border-radius: var(--radius); border: 0; background: var(--panel); }
 .actions .primary { background: var(--accent); }

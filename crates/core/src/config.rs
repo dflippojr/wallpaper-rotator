@@ -4,14 +4,20 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::source::SourceId;
+
 /// User settings, stored as TOML in the platform config folder.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     /// Unsplash access key. `UNSPLASH_ACCESS_KEY` in the environment wins.
     pub access_key: String,
-    /// Search text, such as "mountains". Unsplash can't combine a query with
-    /// topics, so a non-empty query takes precedence.
+    /// Pexels API key. `PEXELS_API_KEY` in the environment wins.
+    pub pexels_key: String,
+    /// Photo sources to mix; each photo comes from one of these.
+    pub sources: Vec<SourceId>,
+    /// Search text, such as "mountains", for Unsplash, Pexels and Wallhaven.
+    /// Unsplash can't combine a query with topics, so a query wins there.
     pub query: String,
     /// Unsplash topic slugs or IDs, such as "wallpapers" or "nature".
     pub topics: Vec<String>,
@@ -32,6 +38,8 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             access_key: String::new(),
+            pexels_key: String::new(),
+            sources: vec![SourceId::Unsplash],
             query: String::new(),
             topics: vec!["wallpapers".into()],
             interval_minutes: 24 * 60,
@@ -66,12 +74,11 @@ impl Config {
     }
 
     pub fn effective_key(&self) -> String {
-        std::env::var("UNSPLASH_ACCESS_KEY")
-            .ok()
-            .filter(|k| !k.trim().is_empty())
-            .unwrap_or_else(|| self.access_key.clone())
-            .trim()
-            .to_string()
+        env_or("UNSPLASH_ACCESS_KEY", &self.access_key)
+    }
+
+    pub fn effective_pexels_key(&self) -> String {
+        env_or("PEXELS_API_KEY", &self.pexels_key)
     }
 
     pub fn cache_cap_bytes(&self) -> u64 {
@@ -84,7 +91,17 @@ impl Config {
         self.query.trim() == other.query.trim()
             && self.topics == other.topics
             && self.per_display == other.per_display
+            && self.sources == other.sources
     }
+}
+
+fn env_or(var: &str, fallback: &str) -> String {
+    std::env::var(var)
+        .ok()
+        .filter(|k| !k.trim().is_empty())
+        .unwrap_or_else(|| fallback.to_string())
+        .trim()
+        .to_string()
 }
 
 #[cfg(test)]
@@ -110,6 +127,18 @@ mod tests {
         assert_eq!(config.query, "mountains");
         assert_eq!(config.interval_minutes, 60);
         assert_eq!(config.cache_cap_mb, 200);
+        assert_eq!(config.sources, [SourceId::Unsplash]);
+    }
+
+    #[test]
+    fn sources_are_saved_by_name() {
+        let config = Config {
+            sources: vec![SourceId::Pexels, SourceId::Daily],
+            ..Config::default()
+        };
+        let text = toml::to_string(&config).unwrap();
+        assert!(text.contains(r#"sources = ["pexels", "daily"]"#), "{text}");
+        assert_eq!(toml::from_str::<Config>(&text).unwrap(), config);
     }
 
     #[test]
