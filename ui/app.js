@@ -31,6 +31,7 @@ function render(s) {
     $("unsplash").dataset.url = w.photo_url;
   } else {
     $("preview").removeAttribute("src");
+    $("photo").style.background = "";
     $("empty").hidden = false;
     $("empty").textContent = s.has_key ? "Fetching your first wallpaper…" : "Add an Unsplash key in Settings";
     $("location").hidden = true;
@@ -40,6 +41,8 @@ function render(s) {
 
   $("btn-next").classList.toggle("spinning", s.busy);
   $("btn-next").disabled = s.busy || !s.has_key;
+  // Until there is a photo, the empty-state text says what's happening.
+  $("btn-next").hidden = !w;
   $("btn-favorite").disabled = !w;
 
   const status = $("status");

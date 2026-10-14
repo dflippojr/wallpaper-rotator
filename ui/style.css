@@ -47,7 +47,7 @@ nav { display: flex; gap: 6px; }
 
 .photo {
   position: relative;
-  height: 212px;
+  height: 262px;
   background: var(--panel);
   overflow: hidden;
 }
@@ -121,8 +121,7 @@ footer a { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* Settings */
 form { padding: 0 14px 14px; overflow-y: auto; height: calc(100% - 50px); }
-h2 { font-size: 14px; margin: 0 0 10px; }
-label { display: block; margin-bottom: 10px; color: var(--muted); font-size: 12px; }
+label { display: block; margin-bottom: 8px; color: var(--muted); font-size: 12px; }
 input[type=text], input[type=password], input[type=number], select {
   display: block;
   width: 100%;
@@ -137,12 +136,13 @@ input[type=text], input[type=password], input[type=number], select {
 input:focus, select:focus { outline: 2px solid #7a7a82; outline-offset: 0; }
 .row { display: flex; gap: 10px; }
 .row label { flex: 1; }
-.check { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: 13px; }
-.hint { margin: -4px 0 10px; color: var(--muted); font-size: 11px; }
+.checks { display: flex; gap: 16px; margin: 2px 0 6px; }
+.check { display: flex; align-items: center; gap: 6px; color: var(--text); font-size: 13px; }
+.hint { margin: -2px 0 8px; color: var(--muted); font-size: 11px; }
 .hint a { text-decoration: underline; }
 .muted { color: #808086; }
 .actions { display: flex; gap: 8px; margin-top: 6px; }
 .actions button { flex: 1; margin: 0; width: auto; padding: 9px; border-radius: var(--radius); border: 0; background: var(--panel); }
 .actions .primary { background: var(--accent); }
-.link { display: block; margin: 12px auto 0; background: none; border: 0; color: var(--muted); font-size: 12px; }
+.link { display: block; margin: 10px auto 0; background: none; border: 0; color: var(--muted); font-size: 12px; }
 .link:hover { color: var(--text); text-decoration: underline; }

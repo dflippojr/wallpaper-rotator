@@ -45,8 +45,7 @@
     </footer>
   </main>
 
-  <form id="view-settings" hidden>
-    <h2>Settings</h2>
+  <form id="view-settings" aria-label="Settings" hidden>
     <label>Unsplash access key
       <input id="f-key" type="password" autocomplete="off" placeholder="Leave blank to keep the current key">
     </label>
@@ -71,8 +70,10 @@
         <input id="f-cap" type="number" min="20" step="10">
       </label>
     </div>
-    <label class="check"><input id="f-paused" type="checkbox"> Pause rotation</label>
-    <label class="check"><input id="f-login" type="checkbox"> Start at login</label>
+    <div class="checks">
+      <label class="check"><input id="f-paused" type="checkbox"> Pause rotation</label>
+      <label class="check"><input id="f-login" type="checkbox"> Start at login</label>
+    </div>
     <div class="actions">
       <button type="button" id="btn-cancel">Cancel</button>
       <button type="submit" class="primary">Save</button>
