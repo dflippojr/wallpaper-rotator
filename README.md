@@ -18,9 +18,64 @@ Other rotators save every photo they cycle through. This one keeps only the wall
 1. Create a free app at <https://unsplash.com/developers> and copy its **Access Key**. Demo mode allows 50 requests per hour, far more than a rotator uses.
 2. Run the app and paste the key in Settings (it opens on first run), or set `UNSPLASH_ACCESS_KEY`.
 
-## Install on Ubuntu (GNOME)
+## Install
 
-Tested on Ubuntu 24.04. Run these in order in a terminal:
+The installer checks your machine and which dependencies are already there, installs only what's missing, then installs the latest release. **Run the same command again to update.** The repo is private, so the installer downloads through the GitHub CLI, logged in as `dflippojr`.
+
+### macOS (Apple silicon) and Ubuntu GNOME
+
+1. Install the GitHub CLI if you don't have it:
+   - **macOS:** `brew install gh`, or the installer from <https://cli.github.com>.
+   - **Ubuntu:** `sudo apt update && sudo apt install -y gh`
+2. Log in as `dflippojr`. Skip this if that account is already logged in; it doesn't have to be the active account.
+   ```sh
+   gh auth login
+   ```
+3. Run the installer:
+   ```sh
+   bash <(GH_TOKEN=$(gh auth token -u dflippojr) gh api -H "Accept: application/vnd.github.raw" repos/dflippojr/wallpaper-rotator/contents/install.sh)
+   ```
+
+### Windows 10 or 11
+
+In PowerShell:
+
+1. Install the GitHub CLI if you don't have it, then open a new PowerShell window:
+   ```powershell
+   winget install --id GitHub.cli -e
+   ```
+2. Log in as `dflippojr`:
+   ```powershell
+   gh auth login
+   ```
+3. Run the installer:
+   ```powershell
+   $env:GH_TOKEN = gh auth token -u dflippojr; & ([scriptblock]::Create((gh api -H "Accept: application/vnd.github.raw" repos/dflippojr/wallpaper-rotator/contents/install.ps1 | Out-String)))
+   ```
+
+### What the installer does
+
+| Machine | It installs |
+| --- | --- |
+| Mac with Apple silicon | the `.dmg`'s app into `/Applications` |
+| Intel Mac | a build from source (installs Xcode Command Line Tools, Rust and the Tauri CLI if missing) |
+| Ubuntu / Debian x86_64 | the `.deb` with apt, which adds any missing libraries |
+| Other x86_64 Linux | the AppImage in `~/.local/bin`, plus a menu entry |
+| Linux with an older glibc than Ubuntu 24.04, or ARM | a build from source (apt-based only; installs only the missing build packages) |
+| Windows 10/11 x64 (ARM64 runs it emulated) | the setup `.exe`, silently, for the current user; it adds WebView2 if missing |
+| WSL | nothing: WSL has no desktop of its own. Install on Windows instead. |
+
+Before installing, the app is stopped if it's running, and it's started again afterwards. Your settings and favorites are kept.
+
+Options:
+- **macOS and Linux:** add them after the command, for example `bash <(...) --dry-run`. `--dry-run` reports what it finds and would do without changing anything, `--force` reinstalls the same version (or continues on a desktop other than GNOME), `--from-source` builds locally, and `--version v0.2.0` picks a release.
+- **Windows:** use `& ([scriptblock]::Create(...)) -DryRun`. `-Force` and `-Version` also work.
+
+From a clone of the repo, run `bash install.sh` or `powershell -ExecutionPolicy Bypass -File install.ps1`.
+
+## Manual install on Ubuntu (GNOME)
+
+This is what the installer automates. Use it if the installer fails. Tested on Ubuntu 24.04; run these in order in a terminal:
 
 1. Check that this is a real GNOME desktop and not WSL. The kernel line must not contain `microsoft`, and the second line should include `GNOME`:
    ```sh
@@ -90,7 +145,7 @@ Needs Rust (stable) plus the Tauri prerequisites for your platform:
 
 - **macOS:** Xcode Command Line Tools.
 - **Windows:** Visual Studio 2022 Build Tools with the C++ workload; WebView2 (built into Windows 11).
-- **Ubuntu:** the packages in step 2 of [Install on Ubuntu](#install-on-ubuntu-gnome).
+- **Ubuntu:** the packages in step 2 of [Manual install on Ubuntu](#manual-install-on-ubuntu-gnome).
 
 ```sh
 cargo test --workspace          # core tests
@@ -101,6 +156,19 @@ cargo build --release -p wallpaper-rotator
 For an installable bundle (`.app`/`.dmg`, `.msi`, `.deb`), install the Tauri CLI (`cargo install tauri-cli --version "^2"`) and run `cargo tauri build` inside `app/`.
 
 The headless CLI is handy for testing: `cargo run -p rotator-core --bin wallpaper-rotator-cli -- rotate` (also `status`, `cleanup`, `displays`, `paths`). Don't run `rotate` while the tray app is running.
+
+## Releasing
+
+`install.sh` and `install.ps1` install the files attached to the latest GitHub release. To publish a new version:
+
+1. Bump `version` in `Cargo.toml` and `app/tauri.conf.json`.
+2. Build the installers into `dist/`:
+   ```sh
+   scripts/build-release.sh linux     # .deb and .AppImage, in Docker
+   scripts/build-release.sh windows   # setup .exe, cross-built in Docker (no MSVC needed)
+   scripts/build-release.sh macos     # .dmg, on the Mac
+   ```
+3. Publish them: `gh release create vX.Y.Z dist/* --title vX.Y.Z --notes "..."`, adding the `.dmg` from the Mac's `dist/`.
 
 ## How it works
 
