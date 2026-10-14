@@ -18,13 +18,79 @@ Other rotators save every photo they cycle through. This one keeps only the wall
 1. Create a free app at <https://unsplash.com/developers> and copy its **Access Key**. Demo mode allows 50 requests per hour, far more than a rotator uses.
 2. Run the app and paste the key in Settings (it opens on first run), or set `UNSPLASH_ACCESS_KEY`.
 
+## Install on Ubuntu (GNOME)
+
+Tested on Ubuntu 24.04. Run these in order in a terminal:
+
+1. Check that this is a real GNOME desktop and not WSL. The kernel line must not contain `microsoft`, and the second line should include `GNOME`:
+   ```sh
+   uname -r; echo "$XDG_CURRENT_DESKTOP"
+   ```
+2. Install the build tools and libraries:
+   ```sh
+   sudo apt update
+   sudo apt install -y build-essential curl git gh libwebkit2gtk-4.1-dev \
+     libayatana-appindicator3-dev librsvg2-dev libssl-dev libxdo-dev
+   ```
+3. Install Rust. It should end with "Rust is installed now. Great!":
+   ```sh
+   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+   ```
+   Don't use `sudo apt install cargo`: Ubuntu's Rust is too old for Tauri 2.
+4. Load Rust into this terminal (new terminals do this automatically):
+   ```sh
+   source "$HOME/.cargo/env"
+   ```
+5. Check that it worked. If this says `command not found`, step 3 failed; rerun it and read its output:
+   ```sh
+   cargo --version
+   ```
+6. Sign in to GitHub. The repo is private, so use the account that owns it: choose GitHub.com, then HTTPS, then log in with a web browser.
+   ```sh
+   gh auth login
+   ```
+7. Download the code:
+   ```sh
+   gh repo clone dflippojr/wallpaper-rotator ~/wallpaper-rotator
+   cd ~/wallpaper-rotator
+   ```
+8. Install the Tauri build tool. It compiles from source, which takes a few minutes:
+   ```sh
+   cargo install tauri-cli --version "^2" --locked
+   ```
+9. Build the installer package:
+   ```sh
+   (cd app && cargo tauri build --bundles deb)
+   ```
+10. Install it:
+    ```sh
+    sudo apt install -y ./target/release/bundle/deb/*.deb
+    ```
+11. Start it from Activities (search for "Wallpaper Rotator"), or from the terminal:
+    ```sh
+    wallpaper-rotator &
+    ```
+12. Click the new icon in the top bar, choose **Show**, open Settings (the gear) and paste your Unsplash access key (see Setup above). The first wallpaper arrives within a few seconds.
+
+To update later:
+```sh
+cd ~/wallpaper-rotator && git pull
+(cd app && cargo tauri build --bundles deb)
+sudo apt install -y ./target/release/bundle/deb/*.deb
+```
+Then quit the app from its menu and start it again.
+
+To uninstall: `sudo apt remove wallpaper-rotator`. Your settings stay in `~/.config`, and favorites in `~/Pictures/Wallpaper Favorites`.
+
+The top-bar icon needs the AppIndicator extension. Ubuntu ships it turned on. On other GNOME distributions, install "AppIndicator and KStatusNotifierItem Support".
+
 ## Build
 
 Needs Rust (stable) plus the Tauri prerequisites for your platform:
 
 - **macOS:** Xcode Command Line Tools.
 - **Windows:** Visual Studio 2022 Build Tools with the C++ workload; WebView2 (built into Windows 11).
-- **Ubuntu:** `sudo apt install libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev build-essential libssl-dev`
+- **Ubuntu:** the packages in step 2 of [Install on Ubuntu](#install-on-ubuntu-gnome).
 
 ```sh
 cargo test --workspace          # core tests
