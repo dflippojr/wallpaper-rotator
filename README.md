@@ -72,13 +72,16 @@ Then add your Unsplash key (see Setup above): click the tray or menu-bar icon (o
 
 Before installing, the app is stopped if it's running, and it's started again afterwards. Your settings and favorites are kept.
 
+The installer shows one progress bar. The download stage fills as bytes arrive, and slow steps such as apt show a seconds counter. The details go to a log, `wallpaper-rotator-install.log` in your temp folder, and its path is printed if something fails. On Ubuntu it asks for your `sudo` password once, before the bar starts.
+
 Options:
 - **macOS and Linux:** end the command with `| bash -s -- --dry-run` instead of `| bash`.
   - `--dry-run` reports what it finds and would do, without changing anything.
+  - `--verbose` prints every check and command instead of the progress bar. This is also the default when the output isn't a terminal.
   - `--force` reinstalls the same version, or continues on a desktop other than GNOME.
   - `--from-source` builds locally.
   - `--version v0.2.0` picks a release.
-- **Windows:** add `-DryRun` after the last parenthesis. `-Force` and `-Version v0.2.0` also work.
+- **Windows:** add `-DryRun` after the last parenthesis. `-Verbose`, `-Force` and `-Version v0.2.0` also work.
 
 From a clone of the repo, run `bash install.sh` or `powershell -ExecutionPolicy Bypass -File install.ps1`.
 
