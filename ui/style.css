@@ -184,6 +184,8 @@ form > .check { margin: 0 0 6px; }
 .sources legend { padding: 0; margin-bottom: 6px; color: var(--muted); font-size: 12px; }
 .hint.error { color: var(--error); margin: 0; }
 .hint.error:empty { display: none; }
+.hint.warn { color: var(--error); }
+.hint.warn:empty { display: none; }
 footer a.plain { pointer-events: none; font-weight: 400; color: var(--muted); }
 .actions { display: flex; gap: 8px; margin-top: 6px; }
 .actions button { flex: 1; margin: 0; width: auto; padding: 9px; border-radius: var(--radius); border: 0; background: var(--panel); }

@@ -124,6 +124,7 @@ function openSettings() {
   $("f-topics").value = st.topics;
   $("f-collections").value = st.collections || "";
   $("f-username").value = st.username || "";
+  $("username-ignored").textContent = snapshot.photographer_note || "";
   showSettingsPanel("sources");
   const interval = String(st.interval_minutes);
   if (![...$("f-interval").options].some((o) => o.value === interval)) {
@@ -197,6 +198,10 @@ for (const button of document.querySelectorAll("[data-settings-panel]")) {
   button.addEventListener("click", () => showSettingsPanel(button.dataset.settingsPanel));
 }
 for (const box of sourceBoxes()) box.addEventListener("change", syncSourceFields);
+// The note describes the saved settings; editing them makes it stale.
+for (const id of ["f-query", "f-collections", "f-username"]) {
+  $(id).addEventListener("input", () => ($("username-ignored").textContent = ""));
+}
 $("credit").addEventListener("click", openLink);
 $("source-link").addEventListener("click", openLink);
 $("dev-link").dataset.url = "https://unsplash.com/developers";

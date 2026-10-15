@@ -71,6 +71,8 @@ pub struct Snapshot {
     pub has_unsplash_key: bool,
     pub has_pexels_key: bool,
     pub settings: Settings,
+    /// Set when a photographer is saved but Search or Collections wins.
+    pub photographer_note: Option<String>,
     pub next_rotation_at: Option<u64>,
     pub favorites_dir: String,
 }
@@ -345,6 +347,11 @@ impl Service {
             has_unsplash_key: !self.config.effective_key().is_empty(),
             has_pexels_key: !self.config.effective_pexels_key().is_empty(),
             settings: Settings::from_config(&self.config),
+            photographer_note: unsplash::photographer_ignored(
+                &self.config.query,
+                &self.config.collections,
+                &self.config.username,
+            ),
             next_rotation_at,
             favorites_dir: self.favorites_dir().display().to_string(),
         }
@@ -965,7 +972,9 @@ impl Service {
     }
 
     fn topic_ids(&mut self, key: &str) -> Result<Vec<String>> {
-        if !self.config.query.trim().is_empty() || !self.config.collections.is_empty() {
+        let c = &self.config;
+        if unsplash::selection(&c.query, &c.collections, &c.username) != unsplash::Selection::Topics
+        {
             return Ok(Vec::new());
         }
         let mut ids = Vec::new();
@@ -1568,16 +1577,32 @@ mod tests {
     }
 
     #[test]
-    fn collection_filter_skips_topic_resolution_until_cleared() {
+    fn collections_and_photographer_skip_topic_resolution_until_cleared() {
         let dir = tempfile::tempdir().unwrap();
         let (mut svc, _) = service(dir.path());
         svc.config.collections = vec!["123".into()];
+        svc.config.username = "ann".into();
+        assert!(svc.topic_ids("").unwrap().is_empty());
+        svc.config.collections.clear();
         assert!(svc.topic_ids("").unwrap().is_empty());
         svc.state
             .topic_ids
             .insert("wallpapers".into(), "topic-id".into());
-        svc.config.collections.clear();
+        svc.config.username.clear();
         assert_eq!(svc.topic_ids("").unwrap(), ["topic-id"]);
+    }
+
+    #[test]
+    fn snapshot_says_when_collections_override_the_photographer() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut svc, _) = service(dir.path());
+        svc.config.username = "ann".into();
+        assert_eq!(svc.snapshot().photographer_note, None);
+        svc.config.collections = vec!["123".into()];
+        assert_eq!(
+            svc.snapshot().photographer_note.as_deref(),
+            Some("Photographer is ignored while Collections is set.")
+        );
     }
 
     #[test]

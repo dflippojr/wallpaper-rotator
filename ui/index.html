@@ -66,7 +66,7 @@
     <label id="search-field">Search <span class="muted">(Unsplash, Pexels, Wallhaven)</span>
       <input id="f-query" type="text" placeholder="e.g. mountains, ocean, city at night">
     </label>
-    <label id="topics-field">Unsplash topics <span class="muted">(after Search and Collections)</span>
+    <label id="topics-field">Unsplash topics <span class="muted">(when nothing else is set)</span>
       <input id="f-topics" type="text" placeholder="wallpapers, nature">
     </label>
     </section>
@@ -89,11 +89,12 @@
       <label>Collections
         <input id="f-collections" type="text" placeholder="Collection IDs or Unsplash collection URLs" aria-describedby="collections-hint">
       </label>
-      <p class="hint" id="collections-hint">Used when Search is empty, instead of topics. Separate collections with commas.</p>
+      <p class="hint" id="collections-hint">Used when Search is empty, instead of a photographer or topics. Separate collections with commas.</p>
       <label>Photographer <span class="muted">(optional)</span>
         <input id="f-username" type="text" placeholder="@name or Unsplash profile URL" aria-describedby="username-hint">
       </label>
-      <p class="hint" id="username-hint">Limits photos to this photographer, including any Search, Collections or Topics filter.</p>
+      <p class="hint" id="username-hint">Their photos, used when Search and Collections are empty, instead of topics.</p>
+      <p class="hint warn" id="username-ignored" role="status"></p>
     </section>
     <section id="settings-rotation" aria-label="Rotation settings" hidden>
     <div class="row">

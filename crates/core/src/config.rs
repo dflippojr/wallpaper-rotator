@@ -17,13 +17,15 @@ pub struct Config {
     /// Photo sources to mix; each photo comes from one of these.
     pub sources: Vec<SourceId>,
     /// Search text, such as "mountains", for Unsplash, Pexels and Wallhaven.
-    /// Unsplash can't combine a query with collections or topics; a query wins.
+    /// Unsplash uses one selection: search, then collections, then
+    /// `username`, then topics.
     pub query: String,
     /// Unsplash topic slugs or IDs, such as "wallpapers" or "nature".
     pub topics: Vec<String>,
     /// Public Unsplash collection IDs; used when search is empty, before topics.
     pub collections: Vec<String>,
-    /// Optional Unsplash photographer filter, combined with the active selection.
+    /// Optional Unsplash photographer, used instead of topics when search and
+    /// collections are empty. Unsplash can't combine it with either.
     pub username: String,
     /// Minutes between rotations. 0 means only rotate on request.
     pub interval_minutes: u64,
