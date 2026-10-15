@@ -47,6 +47,13 @@
   </main>
 
   <form id="view-settings" aria-label="Settings" hidden>
+    <div class="settings-tabs" role="group" aria-label="Settings sections">
+      <button type="button" data-settings-panel="sources" aria-pressed="true">Sources</button>
+      <button type="button" data-settings-panel="more" aria-pressed="false">More sources</button>
+      <button type="button" data-settings-panel="keys" aria-pressed="false">API keys</button>
+      <button type="button" data-settings-panel="rotation" aria-pressed="false">Rotation</button>
+    </div>
+    <section id="settings-sources" aria-label="Photo sources">
     <fieldset class="sources">
       <legend>Photo sources <span class="muted">(each photo comes from one)</span></legend>
       <label class="check"><input type="checkbox" data-source="unsplash"> Unsplash</label>
@@ -55,7 +62,15 @@
       <label class="check"><input type="checkbox" data-source="daily"> Photo of the day</label>
       <label class="check"><input type="checkbox" data-source="favorites"> My favorites</label>
     </fieldset>
-    <p class="hint">Photo of the day mixes Bing and Wikimedia Commons. Wallhaven and Bing images are for personal use. If a source is rate-limited, the others fill in.</p>
+    <p class="hint">Daily: Bing + Wikimedia. Wallhaven and Bing: personal use.</p>
+    <label id="search-field">Search <span class="muted">(Unsplash, Pexels, Wallhaven)</span>
+      <input id="f-query" type="text" placeholder="e.g. mountains, ocean, city at night">
+    </label>
+    <label id="topics-field">Unsplash topics <span class="muted">(after Search and Collections)</span>
+      <input id="f-topics" type="text" placeholder="wallpapers, nature">
+    </label>
+    </section>
+    <section id="settings-keys" aria-label="API keys" hidden>
     <div id="unsplash-fields">
       <label>Unsplash access key
         <input id="f-key" type="password" autocomplete="off">
@@ -68,12 +83,19 @@
       </label>
       <p class="hint">Free key at <a href="#" id="pexels-link">pexels.com/api</a></p>
     </div>
-    <label id="search-field">Search <span class="muted">(Unsplash, Pexels, Wallhaven)</span>
-      <input id="f-query" type="text" placeholder="e.g. mountains, ocean, city at night">
-    </label>
-    <label id="topics-field">Unsplash topics <span class="muted">(when Search is empty)</span>
-      <input id="f-topics" type="text" placeholder="wallpapers, nature">
-    </label>
+    </section>
+    <section id="settings-more" aria-label="More Unsplash sources" hidden>
+      <p class="hint">These filters apply to Unsplash only.</p>
+      <label>Collections
+        <input id="f-collections" type="text" placeholder="Collection IDs or Unsplash collection URLs" aria-describedby="collections-hint">
+      </label>
+      <p class="hint" id="collections-hint">Used when Search is empty, instead of topics. Separate collections with commas.</p>
+      <label>Photographer <span class="muted">(optional)</span>
+        <input id="f-username" type="text" placeholder="@name or Unsplash profile URL" aria-describedby="username-hint">
+      </label>
+      <p class="hint" id="username-hint">Limits photos to this photographer, including any Search, Collections or Topics filter.</p>
+    </section>
+    <section id="settings-rotation" aria-label="Rotation settings" hidden>
     <div class="row">
       <label>Change every
         <select id="f-interval">
@@ -93,6 +115,7 @@
       <label class="check"><input id="f-paused" type="checkbox"> Pause rotation</label>
       <label class="check"><input id="f-login" type="checkbox"> Start at login</label>
     </div>
+    </section>
     <p class="hint error" id="settings-error" role="alert"></p>
     <div class="actions">
       <button type="button" id="btn-cancel">Cancel</button>

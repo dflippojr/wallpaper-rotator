@@ -114,13 +114,14 @@ pub fn part_path(dest: &Path) -> std::path::PathBuf {
     dest.with_file_name(name)
 }
 
-fn explain(name: &'static str, err: ureq::Error) -> anyhow::Error {
+pub(crate) fn explain(name: &'static str, err: ureq::Error) -> anyhow::Error {
     match err {
         ureq::Error::StatusCode(401) => anyhow!("{name} rejected the key"),
         // Unsplash answers 403 when the hourly limit is used up.
         ureq::Error::StatusCode(403) if name == "Unsplash" => RateLimited(name).into(),
         ureq::Error::StatusCode(429) => RateLimited(name).into(),
-        ureq::Error::StatusCode(404) => anyhow!("{name} found nothing for that search"),
+        ureq::Error::StatusCode(404) => anyhow::Error::new(ureq::Error::StatusCode(404))
+            .context(format!("{name} found nothing for that search")),
         ureq::Error::StatusCode(code) => anyhow!("{name} returned HTTP {code}"),
         other => anyhow!("could not reach {name}: {other}"),
     }

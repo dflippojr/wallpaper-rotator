@@ -8,7 +8,7 @@ Other rotators save every photo they cycle through. This one keeps only the wall
 
 - Rotates hourly, every 6 hours, daily (default), weekly, or only on request.
 - Mixes photo sources, and fills in from the others when one is rate-limited or offline (see below).
-- One search ("mountains") for Unsplash, Pexels and Wallhaven, plus Unsplash topics (default: `wallpapers`).
+- One search ("mountains") for Unsplash, Pexels and Wallhaven, plus Unsplash topics (default: `wallpapers`), public collections and a photographer filter.
 - Every photo is cropped to your screen's resolution instead of keeping the multi-MB original.
 - Optional different photo on each display, each sized for that display. The popover's refresh button then changes only the display you're viewing; the tray menu's "Next wallpaper" and the schedule change them all.
 - Tray popover: preview, location, next, save to favorites, photographer credit, settings.
@@ -20,6 +20,8 @@ Tick the photo sources you want in Settings (it opens on first run). Wallhaven, 
 
 - **Unsplash:** create a free app at <https://unsplash.com/developers> and paste its **Access Key**, or set `UNSPLASH_ACCESS_KEY`. Demo keys allow 50 requests an hour; Unsplash raises that to 5,000 for free once you apply for production access on the app's page.
 - **Pexels:** get a free key at <https://www.pexels.com/api/> and paste it, or set `PEXELS_API_KEY`. About 200 requests an hour.
+
+In Settings → More sources, paste Unsplash collection URLs or comma-separated IDs, and optionally an `@photographer` or profile URL. Search wins over collections; collections win over topics. Clearing collections restores topics when Search is empty. The photographer narrows whichever selection is active.
 
 ## Photo sources
 

@@ -137,6 +137,10 @@ fn provider(source: SourceId, id: &str) -> &'static str {
 pub struct Settings {
     pub query: String,
     pub topics: String,
+    #[serde(default)]
+    pub collections: String,
+    #[serde(default)]
+    pub username: String,
     pub interval_minutes: u64,
     pub paused: bool,
     pub cache_cap_mb: u64,
@@ -152,6 +156,8 @@ impl Settings {
         Self {
             query: c.query.clone(),
             topics: c.topics.join(", "),
+            collections: c.collections.join(", "),
+            username: c.username.clone(),
             interval_minutes: c.interval_minutes,
             paused: c.paused,
             cache_cap_mb: c.cache_cap_mb,
@@ -167,7 +173,11 @@ impl Settings {
         config: &mut Config,
         unsplash_key: Option<&str>,
         pexels_key: Option<&str>,
-    ) {
+    ) -> Result<()> {
+        let collections = unsplash::parse_collections(&self.collections)?;
+        let username = unsplash::parse_username(&self.username)?;
+        config.collections = collections;
+        config.username = username;
         config.query = self.query.trim().to_string();
         config.topics = self
             .topics
@@ -195,6 +205,7 @@ impl Settings {
         if let Some(key) = new(pexels_key) {
             config.pexels_key = key;
         }
+        Ok(())
     }
 }
 
@@ -909,7 +920,14 @@ impl Service {
             SourceId::Unsplash => {
                 let key = self.config.effective_key();
                 let topics = self.topic_ids(&key)?;
-                unsplash::batch(&self.http, &key, &query, &topics)?
+                unsplash::batch(
+                    &self.http,
+                    &key,
+                    &query,
+                    &topics,
+                    &self.config.collections,
+                    &self.config.username,
+                )?
             }
             SourceId::Pexels => {
                 let key = self.config.effective_pexels_key();
@@ -947,7 +965,7 @@ impl Service {
     }
 
     fn topic_ids(&mut self, key: &str) -> Result<Vec<String>> {
-        if !self.config.query.trim().is_empty() {
+        if !self.config.query.trim().is_empty() || !self.config.collections.is_empty() {
             return Ok(Vec::new());
         }
         let mut ids = Vec::new();
@@ -1530,6 +1548,9 @@ mod tests {
         let (mut svc, _) = service(dir.path());
         for change in [
             |c: &mut Config| c.query = "mountains".into(),
+            |c: &mut Config| c.collections.push("123".into()),
+            |c: &mut Config| c.collections.clear(),
+            |c: &mut Config| c.username = "ann".into(),
             |c: &mut Config| c.per_display = !c.per_display,
             |c: &mut Config| c.sources.push(SourceId::Wallhaven),
         ] {
@@ -1547,6 +1568,72 @@ mod tests {
     }
 
     #[test]
+    fn collection_filter_skips_topic_resolution_until_cleared() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut svc, _) = service(dir.path());
+        svc.config.collections = vec!["123".into()];
+        assert!(svc.topic_ids("").unwrap().is_empty());
+        svc.state
+            .topic_ids
+            .insert("wallpapers".into(), "topic-id".into());
+        svc.config.collections.clear();
+        assert_eq!(svc.topic_ids("").unwrap(), ["topic-id"]);
+    }
+
+    #[test]
+    fn invalid_source_settings_do_not_change_config() {
+        let mut config = Config::default();
+        let original = config.clone();
+        let mut settings = Settings::from_config(&config);
+        settings.query = "new search".into();
+        settings.collections = "https://example.com/123".into();
+        assert!(settings.apply_to(&mut config, None, None).is_err());
+        assert_eq!(config, original);
+        settings.collections = "123".into();
+        settings.username = "@".into();
+        assert!(settings.apply_to(&mut config, None, None).is_err());
+        assert_eq!(config, original);
+    }
+
+    #[test]
+    fn small_unsplash_pool_prefers_photos_outside_the_current_set() {
+        for each in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let (mut svc, _) = service(dir.path());
+            let screens = [screen("1", 100, 100), screen("2", 100, 100)];
+            let current = photo(&svc, "current", each.then(|| screens[0].clone()));
+            svc.state.current = Some(Set::single(current));
+            let image = png(dir.path(), "image.png", 100, 100);
+            let candidate = |id: &str| Candidate {
+                source: SourceId::Unsplash,
+                id: id.into(),
+                width: 100,
+                height: 100,
+                author: String::new(),
+                author_url: String::new(),
+                photo_url: String::new(),
+                preview_url: String::new(),
+                location: None,
+                description: None,
+                color: None,
+                image: Image::File {
+                    path: image.clone(),
+                },
+                track_url: None,
+            };
+            svc.config.access_key = "unused-test-key".into();
+            svc.state.queue.insert(
+                SourceId::Unsplash,
+                vec![candidate("current"), candidate("other"), candidate("third")],
+            );
+            let (next, _) = svc.fetch(&screens, each).unwrap();
+            assert!(next.photos.iter().all(|w| w.id != "current"));
+            let ids: HashSet<_> = next.photos.iter().map(|w| &w.id).collect();
+            assert_eq!(ids.len(), next.photos.len());
+        }
+    }
+
+    #[test]
     fn settings_round_trip() {
         let mut config = Config {
             access_key: "old".into(),
@@ -1558,14 +1645,23 @@ mod tests {
         settings.cache_cap_mb = 1;
         settings.per_display = true;
         settings.sources = vec![SourceId::Favorites, SourceId::Pexels, SourceId::Pexels];
-        settings.apply_to(&mut config, Some("  "), Some("px"));
+        settings.collections = "https://unsplash.com/collections/123/lakes, abc_12".into();
+        settings.username = "https://unsplash.com/@ann".into();
+        settings
+            .apply_to(&mut config, Some("  "), Some("px"))
+            .unwrap();
+        assert_eq!(config.collections, ["123", "abc_12"]);
+        assert_eq!(config.username, "ann");
+        let round_trip = Settings::from_config(&config);
+        assert_eq!(round_trip.collections, "123, abc_12");
+        assert_eq!(round_trip.username, "ann");
         assert_eq!(config.topics, ["nature", "film"]);
         assert_eq!(config.cache_cap_mb, 20);
         assert_eq!(config.access_key, "old");
         assert_eq!(config.pexels_key, "px");
         assert!(config.per_display);
         assert_eq!(config.sources, [SourceId::Pexels, SourceId::Favorites]);
-        settings.apply_to(&mut config, Some("new"), None);
+        settings.apply_to(&mut config, Some("new"), None).unwrap();
         assert_eq!(config.access_key, "new");
         assert_eq!(config.pexels_key, "px");
     }

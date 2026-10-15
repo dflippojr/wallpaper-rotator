@@ -17,10 +17,14 @@ pub struct Config {
     /// Photo sources to mix; each photo comes from one of these.
     pub sources: Vec<SourceId>,
     /// Search text, such as "mountains", for Unsplash, Pexels and Wallhaven.
-    /// Unsplash can't combine a query with topics, so a query wins there.
+    /// Unsplash can't combine a query with collections or topics; a query wins.
     pub query: String,
     /// Unsplash topic slugs or IDs, such as "wallpapers" or "nature".
     pub topics: Vec<String>,
+    /// Public Unsplash collection IDs; used when search is empty, before topics.
+    pub collections: Vec<String>,
+    /// Optional Unsplash photographer filter, combined with the active selection.
+    pub username: String,
     /// Minutes between rotations. 0 means only rotate on request.
     pub interval_minutes: u64,
     pub paused: bool,
@@ -42,6 +46,8 @@ impl Default for Config {
             sources: vec![SourceId::Unsplash],
             query: String::new(),
             topics: vec!["wallpapers".into()],
+            collections: Vec::new(),
+            username: String::new(),
             interval_minutes: 24 * 60,
             paused: false,
             cache_cap_mb: 200,
@@ -90,6 +96,8 @@ impl Config {
     pub fn same_source(&self, other: &Config) -> bool {
         self.query.trim() == other.query.trim()
             && self.topics == other.topics
+            && self.collections == other.collections
+            && self.username == other.username
             && self.per_display == other.per_display
             && self.sources == other.sources
     }
@@ -127,6 +135,8 @@ mod tests {
         assert_eq!(config.query, "mountains");
         assert_eq!(config.interval_minutes, 60);
         assert_eq!(config.cache_cap_mb, 200);
+        assert!(config.collections.is_empty());
+        assert!(config.username.is_empty());
         assert_eq!(config.sources, [SourceId::Unsplash]);
     }
 

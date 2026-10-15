@@ -142,7 +142,16 @@ footer {
 footer a { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* Settings */
-form { padding: 0 14px 14px; overflow-y: auto; height: calc(100% - 50px); }
+form { padding: 0 14px 10px; height: calc(100% - 50px); display: flex; flex-direction: column; }
+form section { flex: 1; min-height: 0; }
+.settings-tabs { display: flex; gap: 4px; margin-bottom: 10px; }
+.settings-tabs button { flex: 1; padding: 5px 2px; border: 0; border-radius: 6px; background: var(--panel); color: var(--muted); font-size: 11px; }
+.settings-tabs button[aria-pressed=true] { background: var(--accent); color: var(--text); }
+.settings-tabs button:focus-visible { outline: 2px solid #7a7a82; }
+#settings-sources label { margin-bottom: 5px; }
+#settings-sources .sources { gap: 0 10px; }
+#settings-sources .hint { margin-bottom: 5px; }
+#settings-sources .sources legend { margin-bottom: 3px; }
 label { display: block; margin-bottom: 8px; color: var(--muted); font-size: 12px; }
 input[type=text], input[type=password], input[type=number], select {
   display: block;
