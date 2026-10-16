@@ -1,5 +1,6 @@
 //! HTTP shared by every photo source.
 
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::Path;
@@ -8,6 +9,15 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Result};
 use serde::de::DeserializeOwned;
 
+/// Where each source's API lives, keyed by the name sources pass to
+/// [`Http::get`].
+const BASES: [(&str, &str); 5] = [
+    ("Unsplash", "https://api.unsplash.com"),
+    ("Pexels", "https://api.pexels.com"),
+    ("Wallhaven", "https://wallhaven.cc"),
+    ("Bing", "https://www.bing.com"),
+    ("Wikimedia", "https://api.wikimedia.org"),
+];
 const MAX_IMAGE_BYTES: u64 = 80 * 1024 * 1024;
 /// Wikimedia asks API clients to say who they are.
 const USER_AGENT: &str = concat!(
@@ -36,6 +46,8 @@ pub fn is_rate_limited(e: &anyhow::Error) -> bool {
 #[derive(Clone)]
 pub struct Http {
     agent: ureq::Agent,
+    /// Sources sent somewhere other than their real API (a test's stub).
+    bases: HashMap<&'static str, String>,
 }
 
 impl Default for Http {
@@ -45,11 +57,37 @@ impl Default for Http {
             .user_agent(USER_AGENT)
             .build()
             .new_agent();
-        Self { agent }
+        Self {
+            agent,
+            bases: HashMap::new(),
+        }
     }
 }
 
 impl Http {
+    /// Sends the named sources' requests to other base URLs, such as
+    /// `http://127.0.0.1:PORT` for a local stub. Others keep their real API.
+    pub fn with_bases(bases: HashMap<&'static str, String>) -> Self {
+        let bases = bases
+            .into_iter()
+            .map(|(name, url)| (name, url.trim_end_matches('/').to_string()))
+            .collect();
+        Self {
+            bases,
+            ..Self::default()
+        }
+    }
+
+    /// The base URL of `name`'s API, without a trailing slash.
+    pub fn base(&self, name: &str) -> &str {
+        self.bases.get(name).map(String::as_str).unwrap_or_else(|| {
+            BASES
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map_or("", |(_, url)| url)
+        })
+    }
+
     /// GETs `url` with extra headers. `name` labels errors ("Pexels ...").
     pub fn get(
         &self,
@@ -158,6 +196,14 @@ mod tests {
             "Pexels",
             ureq::Error::StatusCode(403)
         )));
+    }
+
+    #[test]
+    fn bases_default_to_the_real_apis() {
+        let stub = Http::with_bases(HashMap::from([("Pexels", "http://127.0.0.1:1/".into())]));
+        assert_eq!(stub.base("Pexels"), "http://127.0.0.1:1");
+        assert_eq!(stub.base("Unsplash"), "https://api.unsplash.com");
+        assert_eq!(Http::default().base("Pexels"), "https://api.pexels.com");
     }
 
     #[test]
