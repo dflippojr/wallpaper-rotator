@@ -21,3 +21,12 @@ pub fn now() -> u64 {
         .map(|d| d.as_secs())
         .unwrap_or(0)
 }
+
+// Deliberate failure to show the `gate` check going red. Reverted next commit.
+#[cfg(test)]
+mod gate_demo {
+    #[test]
+    fn gate_goes_red() {
+        panic!("deliberate failure: gate must go red");
+    }
+}
