@@ -8,7 +8,6 @@ use serde::Deserialize;
 use super::{Candidate, Image, SourceId};
 use crate::net::{encode, Http};
 
-const API: &str = "https://api.unsplash.com";
 /// Appended to Unsplash links, as the API guidelines ask.
 pub const UTM: &str = "utm_source=wallpaper_rotator&utm_medium=referral";
 /// The most `/photos/random` returns at once.
@@ -141,7 +140,13 @@ pub fn batch(
     collections: &[String],
     username: &str,
 ) -> Result<Vec<Candidate>> {
-    let url = batch_url(query, topic_ids, collections, username);
+    let url = batch_url(
+        http.base("Unsplash"),
+        query,
+        topic_ids,
+        collections,
+        username,
+    );
     let photos: Vec<Photo> = get_json(http, key, &url)
         .map_err(|e| batch_error(e, selection(query, collections, username)))?;
     Ok(photos.into_iter().map(candidate).collect())
@@ -161,9 +166,15 @@ fn batch_error(error: anyhow::Error, selection: Selection) -> anyhow::Error {
     }
 }
 
-fn batch_url(query: &str, topic_ids: &[String], collections: &[String], username: &str) -> String {
+fn batch_url(
+    api: &str,
+    query: &str,
+    topic_ids: &[String],
+    collections: &[String],
+    username: &str,
+) -> String {
     let mut url =
-        format!("{API}/photos/random?orientation=landscape&content_filter=high&count={BATCH}");
+        format!("{api}/photos/random?orientation=landscape&content_filter=high&count={BATCH}");
     let (name, value) = match selection(query, collections, username) {
         Selection::Search => ("query", query.trim().to_string()),
         Selection::Collections => ("collections", collections.join(",")),
@@ -235,7 +246,11 @@ fn unsplash_path(value: &str) -> Option<&str> {
 
 /// Resolves a topic slug (or ID) to its ID.
 pub fn topic_id(http: &Http, key: &str, slug_or_id: &str) -> Result<String> {
-    let url = format!("{API}/topics/{}", encode(slug_or_id.trim()));
+    let url = format!(
+        "{}/topics/{}",
+        http.base("Unsplash"),
+        encode(slug_or_id.trim())
+    );
     let topic: Topic = get_json(http, key, &url)
         .map_err(|e| e.context(format!("unknown Unsplash topic \"{slug_or_id}\"")))?;
     Ok(topic.id)
@@ -290,20 +305,12 @@ pub fn with_utm(url: &str) -> String {
 mod tests {
     use super::*;
 
-    const SAMPLE: &str = r##"{
-        "id": "abc123", "width": 6000, "height": 4000, "color": "#a0a0a0",
-        "description": null, "alt_description": "a lake at sunset",
-        "urls": {"raw": "https://images.unsplash.com/photo-1?ixid=x&ixlib=rb-4.0.3",
-                 "full": "f", "regular": "r", "small": "https://images.unsplash.com/photo-1?w=400", "thumb": "t"},
-        "links": {"html": "https://unsplash.com/photos/abc123",
-                  "download_location": "https://api.unsplash.com/photos/abc123/download?ixid=x"},
-        "user": {"name": "Mario Dobelmann", "links": {"html": "https://unsplash.com/@mario"}},
-        "location": {"name": null, "city": "Kirchsee", "country": "Germany"}
-    }"##;
+    /// A `/photos/random` reply; the worker journeys serve it too.
+    const SAMPLE: &str = include_str!("../../tests/fixtures/sources/unsplash/random.json");
 
     #[test]
     fn turns_photos_into_candidates() {
-        let photos: Vec<Photo> = serde_json::from_str(&format!("[{SAMPLE}]")).unwrap();
+        let photos: Vec<Photo> = serde_json::from_str(SAMPLE).unwrap();
         let c = candidate(photos[0].clone());
         assert_eq!(c.id, "abc123");
         assert_eq!(c.author, "Mario Dobelmann");
@@ -326,8 +333,8 @@ mod tests {
             r#""location": {"name": null, "city": "Kirchsee", "country": "Germany"}"#,
             r#""location": null"#,
         );
-        let photo: Photo = serde_json::from_str(&without).unwrap();
-        assert!(photo.location.is_none());
+        let photos: Vec<Photo> = serde_json::from_str(&without).unwrap();
+        assert!(photos[0].location.is_none());
         let empty = Location {
             name: Some(" ".into()),
             city: None,
@@ -421,8 +428,8 @@ mod tests {
         ] {
             assert_eq!(selection(query, collections, username), expected);
             assert_eq!(
-                batch_url(query, topics, collections, username),
-                format!("{API}/photos/random?orientation=landscape&content_filter=high&count=30{filter}")
+                batch_url("https://api", query, topics, collections, username),
+                format!("https://api/photos/random?orientation=landscape&content_filter=high&count=30{filter}")
             );
         }
     }

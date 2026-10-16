@@ -100,11 +100,6 @@ mod tests {
         // The gap below the short monitor stays black.
         assert!(near(*out.get_pixel(50, 25), [0, 0, 0]));
         assert!(!dir.path().join("span.jpg.part").exists());
-    }
-
-    #[test]
-    fn refuses_empty_layouts() {
-        let dir = tempfile::tempdir().unwrap();
         assert!(compose(&[], &dir.path().join("x.jpg")).is_err());
     }
 }

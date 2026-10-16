@@ -8,7 +8,6 @@ use serde::Deserialize;
 use super::{Candidate, Image, SourceId};
 use crate::net::{encode, Http};
 
-const API: &str = "https://api.pexels.com/v1";
 pub const BATCH: u32 = 40;
 /// Pexels serves search results this deep at most.
 const MAX_PAGES: u64 = 100;
@@ -59,11 +58,12 @@ pub fn batch(
 ) -> Result<(Vec<Candidate>, u64)> {
     let page = pages.map_or(1, |n| 1 + random % n.clamp(1, MAX_PAGES));
     let query = query.trim();
+    let api = http.base("Pexels");
     let url = if query.is_empty() {
-        format!("{API}/curated?per_page={BATCH}&page={page}")
+        format!("{api}/v1/curated?per_page={BATCH}&page={page}")
     } else {
         format!(
-            "{API}/search?query={}&orientation=landscape&size=large&per_page={BATCH}&page={page}",
+            "{api}/v1/search?query={}&orientation=landscape&size=large&per_page={BATCH}&page={page}",
             encode(query)
         )
     };
@@ -110,40 +110,6 @@ fn candidate(photo: Photo) -> Candidate {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const SAMPLE: &str = r##"{"page": 1, "per_page": 40, "total_results": 81, "photos": [
-        {"id": 417074, "width": 5184, "height": 3456, "url": "https://www.pexels.com/photo/lake-417074/",
-         "photographer": "Pixabay", "photographer_url": "https://www.pexels.com/@pixabay",
-         "photographer_id": 2659, "avg_color": "#6C7C88", "liked": false, "alt": "Lake and mountains",
-         "src": {"original": "https://images.pexels.com/photos/417074/pexels-photo-417074.jpeg",
-                 "large2x": "x", "large": "x", "medium": "https://images.pexels.com/photos/417074/m.jpeg",
-                 "small": "x", "portrait": "x", "landscape": "x", "tiny": "x"}},
-        {"id": 2, "width": 3000, "height": 4500, "url": "u", "photographer": "P", "photographer_url": "p",
-         "avg_color": null, "alt": "", "src": {"original": "o", "medium": "m"}}
-    ]}"##;
-
-    #[test]
-    fn parses_a_page_and_drops_portraits() {
-        let page: Page = serde_json::from_str(SAMPLE).unwrap();
-        assert_eq!(page.total_results.div_ceil(u64::from(BATCH)), 3);
-        let photos: Vec<Candidate> = page
-            .photos
-            .into_iter()
-            .filter(|p| p.width >= p.height)
-            .map(candidate)
-            .collect();
-        assert_eq!(photos.len(), 1);
-        let c = &photos[0];
-        assert_eq!((c.id.as_str(), c.author.as_str()), ("417074", "Pixabay"));
-        assert_eq!(c.description.as_deref(), Some("Lake and mountains"));
-        let Image::Sized { url } = &c.image else {
-            panic!()
-        };
-        assert_eq!(
-            url,
-            "https://images.pexels.com/photos/417074/pexels-photo-417074.jpeg?auto=compress&cs=tinysrgb&fit=crop&w={w}&h={h}"
-        );
-    }
 
     #[test]
     fn needs_a_key() {

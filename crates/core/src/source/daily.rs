@@ -58,15 +58,18 @@ struct BingImage {
 }
 
 fn bing(http: &Http) -> Result<Vec<Candidate>> {
-    let archive: BingArchive = http.get_json(
-        "Bing",
-        "https://www.bing.com/HPImageArchive.aspx?format=js&idx=0&n=8&mkt=en-US",
-        &[],
-    )?;
-    Ok(archive.images.into_iter().map(bing_candidate).collect())
+    let base = http.base("Bing");
+    let url = format!("{base}/HPImageArchive.aspx?format=js&idx=0&n=8&mkt=en-US");
+    let archive: BingArchive = http.get_json("Bing", &url, &[])?;
+    Ok(archive
+        .images
+        .into_iter()
+        .map(|img| bing_candidate(base, img))
+        .collect())
 }
 
-fn bing_candidate(img: BingImage) -> Candidate {
+/// `base` is where Bing serves images: the API's own host.
+fn bing_candidate(base: &str, img: BingImage) -> Candidate {
     // "Ammonite fossils, Dorset (© J Nemchinova/Getty Images)"
     let (caption, author) = match img.copyright.rsplit_once("(©") {
         Some((caption, rest)) => (
@@ -96,12 +99,12 @@ fn bing_candidate(img: BingImage) -> Candidate {
         author,
         author_url: link.clone(),
         photo_url: link,
-        preview_url: format!("https://www.bing.com{}_400x240.jpg", img.urlbase),
+        preview_url: format!("{base}{}_400x240.jpg", img.urlbase),
         location: None,
         description: (!caption.is_empty()).then_some(caption),
         color: None,
         image: Image::Full {
-            url: format!("https://www.bing.com{}_UHD.jpg", img.urlbase),
+            url: format!("{base}{}_UHD.jpg", img.urlbase),
         },
         track_url: None,
     }
@@ -148,7 +151,10 @@ struct License {
 }
 
 fn wikimedia(http: &Http, y: i64, m: u32, d: u32) -> Result<Option<Candidate>> {
-    let url = format!("https://api.wikimedia.org/feed/v1/wikipedia/en/featured/{y}/{m:02}/{d:02}");
+    let url = format!(
+        "{}/feed/v1/wikipedia/en/featured/{y}/{m:02}/{d:02}",
+        http.base("Wikimedia")
+    );
     let featured: Featured = http.get_json("Wikimedia", &url, &[])?;
     Ok(featured.image.and_then(wikimedia_candidate))
 }
@@ -218,6 +224,9 @@ pub fn civil_date(unix: u64) -> (i64, u32, u32) {
 mod tests {
     use super::*;
 
+    const BING: &str = include_str!("../../tests/fixtures/sources/daily/bing.json");
+    const WIKIMEDIA: &str = include_str!("../../tests/fixtures/sources/daily/wikimedia.json");
+
     #[test]
     fn dates() {
         assert_eq!(civil_date(0), (1970, 1, 1));
@@ -227,12 +236,9 @@ mod tests {
 
     #[test]
     fn bing_credit_and_urls() {
-        let img: BingImage = serde_json::from_str(r#"{"startdate": "20261014",
-            "urlbase": "/th?id=OHR.AmmoniteFossils_EN-US6354038755",
-            "copyright": "Ammonite fossils from the Jurassic Period (© J Nemchinova/Getty Images)",
-            "copyrightlink": "https://www.bing.com/search?q=National+Fossil+Day", "title": "Spirals"}"#)
-        .unwrap();
-        let c = bing_candidate(img);
+        let archive: BingArchive = serde_json::from_str(BING).unwrap();
+        let img = archive.images.into_iter().next().unwrap();
+        let c = bing_candidate("https://www.bing.com", img);
         assert_eq!(c.id, "bing-20261014-AmmoniteFossils");
         assert_eq!(c.author, "J Nemchinova/Getty Images");
         assert_eq!(
@@ -250,13 +256,7 @@ mod tests {
 
     #[test]
     fn wikimedia_thumbnails_and_filters() {
-        let sample = r#"{"image": {"title": "File:Great Blue Heron.jpg",
-            "thumbnail": {"source": "https://thumb.wikimedia.org/x/960px-Heron.jpg?utm=1", "width": 640, "height": 407},
-            "image": {"source": "https://upload.wikimedia.org/wikipedia/commons/6/66/Great_Blue_Heron.jpg?utm_source=x", "width": 4790, "height": 3043},
-            "file_page": "https://commons.wikimedia.org/wiki/File:Great_Blue_Heron.jpg",
-            "artist": {"text": "Frank Schulenburg"}, "license": {"type": "CC BY-SA 3.0"},
-            "description": {"text": "Great Blue Heron hunting"}}}"#;
-        let featured: Featured = serde_json::from_str(sample).unwrap();
+        let featured: Featured = serde_json::from_str(WIKIMEDIA).unwrap();
         let c = wikimedia_candidate(featured.image.unwrap()).unwrap();
         assert_eq!(c.author, "Frank Schulenburg (CC BY-SA 3.0)");
         assert_eq!(
@@ -267,13 +267,13 @@ mod tests {
             }
         );
 
-        let portrait = sample.replace(
+        let portrait = WIKIMEDIA.replace(
             r#""width": 4790, "height": 3043"#,
             r#""width": 3000, "height": 4000"#,
         );
         let featured: Featured = serde_json::from_str(&portrait).unwrap();
         assert!(wikimedia_candidate(featured.image.unwrap()).is_none());
-        let svg = sample.replace("Great_Blue_Heron.jpg?utm_source", "Map.svg?utm_source");
+        let svg = WIKIMEDIA.replace("Great_Blue_Heron.jpg?utm_source", "Map.svg?utm_source");
         let featured: Featured = serde_json::from_str(&svg).unwrap();
         assert!(wikimedia_candidate(featured.image.unwrap()).is_none());
     }
