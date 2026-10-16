@@ -17,10 +17,11 @@ permissions:
 
 env:
   # Minimum line coverage (percent) for `cargo llvm-cov --workspace` on Linux.
-  # Set to the measured total minus 1 point. The floor only goes up: raise it
-  # when coverage rises, never lower it to get a PR through.
+  # Set to the measured total minus 1 point (77.11% on 2026-10-16). The floor
+  # only goes up: raise it when coverage rises, never lower it to get a PR
+  # through.
   # scripts/check.sh reads this value.
-  COVERAGE_FLOOR: 0
+  COVERAGE_FLOOR: 76.1
 
 jobs:
   test:
