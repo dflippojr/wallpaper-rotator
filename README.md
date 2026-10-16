@@ -175,6 +175,8 @@ cargo run -p wallpaper-rotator  # run the tray app (debug)
 cargo build --release -p wallpaper-rotator
 ```
 
+Before opening a PR, run the same checks CI runs: `scripts/check.sh` (or `scripts\check.ps1` on Windows). [AGENTS.md](AGENTS.md) explains how to prove a change works.
+
 For an installable bundle (`.app`/`.dmg`, `.msi`, `.deb`), install the Tauri CLI (`cargo install tauri-cli --version "^2"`) and run `cargo tauri build` inside `app/`.
 
 The headless CLI is handy for testing: `cargo run -p rotator-core --bin wallpaper-rotator-cli -- rotate` (also `status`, `cleanup`, `displays`, `paths`). Don't run `rotate` while the tray app is running.
