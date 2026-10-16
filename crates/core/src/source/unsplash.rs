@@ -2,7 +2,7 @@
 //! display, call the photo's `download_location` when it becomes a
 //! wallpaper, and credit the photographer with links back to Unsplash.
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
 use super::{Candidate, Image, SourceId};
@@ -94,20 +94,143 @@ fn get_json<T: serde::de::DeserializeOwned>(http: &Http, key: &str, url: &str) -
     )
 }
 
-/// Random landscape photos for a search query, or else from topics.
-pub fn batch(http: &Http, key: &str, query: &str, topic_ids: &[String]) -> Result<Vec<Candidate>> {
+/// What random photos come from. The API ignores collections and topics
+/// when a username is sent, so a request carries exactly one of these.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Selection {
+    Search,
+    Collections,
+    Photographer,
+    /// Topics, or any photo when there are none.
+    Topics,
+}
+
+/// Search wins over collections, collections over a photographer, and a
+/// photographer over topics.
+pub fn selection(query: &str, collections: &[String], username: &str) -> Selection {
+    if !query.trim().is_empty() {
+        Selection::Search
+    } else if !collections.is_empty() {
+        Selection::Collections
+    } else if !username.trim().is_empty() {
+        Selection::Photographer
+    } else {
+        Selection::Topics
+    }
+}
+
+/// Why a photographer is set but not used, for the settings screen.
+pub fn photographer_ignored(query: &str, collections: &[String], username: &str) -> Option<String> {
+    if username.trim().is_empty() {
+        return None;
+    }
+    let winner = match selection(query, collections, username) {
+        Selection::Search => "Search",
+        Selection::Collections => "Collections",
+        Selection::Photographer | Selection::Topics => return None,
+    };
+    Some(format!("Photographer is ignored while {winner} is set."))
+}
+
+/// Random landscape photos from whichever selection wins (see `selection`).
+pub fn batch(
+    http: &Http,
+    key: &str,
+    query: &str,
+    topic_ids: &[String],
+    collections: &[String],
+    username: &str,
+) -> Result<Vec<Candidate>> {
+    let url = batch_url(query, topic_ids, collections, username);
+    let photos: Vec<Photo> = get_json(http, key, &url)
+        .map_err(|e| batch_error(e, selection(query, collections, username)))?;
+    Ok(photos.into_iter().map(candidate).collect())
+}
+
+fn batch_error(error: anyhow::Error, selection: Selection) -> anyhow::Error {
+    if !matches!(
+        error.downcast_ref::<ureq::Error>(),
+        Some(ureq::Error::StatusCode(404))
+    ) {
+        return error;
+    }
+    match selection {
+        Selection::Collections => anyhow::anyhow!("Unsplash couldn't find that collection"),
+        Selection::Photographer => anyhow::anyhow!("Unsplash couldn't find that photographer"),
+        Selection::Search | Selection::Topics => error,
+    }
+}
+
+fn batch_url(query: &str, topic_ids: &[String], collections: &[String], username: &str) -> String {
     let mut url =
         format!("{API}/photos/random?orientation=landscape&content_filter=high&count={BATCH}");
-    let query = query.trim();
-    if !query.is_empty() {
-        url.push_str("&query=");
-        url.push_str(&encode(query));
-    } else if !topic_ids.is_empty() {
-        url.push_str("&topics=");
-        url.push_str(&encode(&topic_ids.join(",")));
+    let (name, value) = match selection(query, collections, username) {
+        Selection::Search => ("query", query.trim().to_string()),
+        Selection::Collections => ("collections", collections.join(",")),
+        Selection::Photographer => ("username", username.trim().to_string()),
+        Selection::Topics if topic_ids.is_empty() => return url,
+        Selection::Topics => ("topics", topic_ids.join(",")),
+    };
+    url.push_str(&format!("&{name}={}", encode(&value)));
+    url
+}
+
+/// Normalize IDs and pasted public collection URLs at the settings boundary.
+pub fn parse_collections(text: &str) -> Result<Vec<String>> {
+    let mut ids = Vec::new();
+    for value in text
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|s| !s.is_empty())
+    {
+        let id = if let Some(path) = unsplash_path(value) {
+            path.strip_prefix("collections/")
+                .and_then(|p| p.split('/').next())
+                .context("paste an Unsplash collection URL or collection ID")?
+        } else {
+            value
+        };
+        if !identifier(id) {
+            bail!("paste an Unsplash collection URL or collection ID");
+        }
+        if !ids.iter().any(|s| s == id) {
+            ids.push(id.to_string());
+        }
     }
-    let photos: Vec<Photo> = get_json(http, key, &url)?;
-    Ok(photos.into_iter().map(candidate).collect())
+    Ok(ids)
+}
+
+/// Accept a username, @username, or an Unsplash profile URL.
+pub fn parse_username(text: &str) -> Result<String> {
+    let value = text.trim();
+    if value.is_empty() {
+        return Ok(String::new());
+    }
+    let username = unsplash_path(value)
+        .unwrap_or(value)
+        .trim_end_matches('/')
+        .trim_start_matches('@');
+    if !identifier(username) {
+        bail!("paste an Unsplash profile URL or @username");
+    }
+    Ok(username.to_string())
+}
+
+fn identifier(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
+}
+
+fn unsplash_path(value: &str) -> Option<&str> {
+    let value = value
+        .strip_prefix("https://")
+        .or_else(|| value.strip_prefix("http://"))
+        .unwrap_or(value);
+    let path = value
+        .strip_prefix("unsplash.com/")
+        .or_else(|| value.strip_prefix("www.unsplash.com/"))?;
+    path.split(['?', '#']).next()
 }
 
 /// Resolves a topic slug (or ID) to its ID.
@@ -221,7 +344,128 @@ mod tests {
     }
 
     #[test]
+    fn collection_ids_and_urls() {
+        assert_eq!(parse_collections(" 123, https://unsplash.com/collections/abc_-12/lakes?utm_source=x#top, 123\nwww.unsplash.com/collections/456/ ").unwrap(), ["123", "abc_-12", "456"]);
+        assert!(parse_collections(" , ").unwrap().is_empty());
+        for invalid in [
+            "https://example.com/collections/123",
+            "https://unsplash.com/collections/",
+            "https://unsplash.com/@ann",
+            "bad/id",
+        ] {
+            assert!(parse_collections(invalid).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn photographer_names_and_profile_urls() {
+        for input in [
+            "ann_lee",
+            " @ann_lee ",
+            "https://unsplash.com/@ann_lee/",
+            "https://www.unsplash.com/ann_lee?utm_source=x",
+        ] {
+            assert_eq!(parse_username(input).unwrap(), "ann_lee");
+        }
+        assert_eq!(parse_username(" ").unwrap(), "");
+        for invalid in [
+            "@",
+            "https://example.com/@ann",
+            "ann lee",
+            "https://unsplash.com/@ann/likes",
+        ] {
+            assert!(parse_username(invalid).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn random_photo_selection_precedence() {
+        let topics: Vec<String> = vec!["topic1".into(), "topic2".into()];
+        let collections: Vec<String> = vec!["123".into(), "abc_12".into()];
+        let none: &[String] = &[];
+        // Search > collections > photographer > topics; only the winner is sent.
+        for (query, collections, username, topics, expected, filter) in [
+            (
+                " lake & sky ",
+                &collections[..],
+                "ann",
+                &topics[..],
+                Selection::Search,
+                "&query=lake%20%26%20sky",
+            ),
+            (
+                " ",
+                &collections[..],
+                "ann",
+                &topics[..],
+                Selection::Collections,
+                "&collections=123%2Cabc_12",
+            ),
+            (
+                "",
+                none,
+                " ann ",
+                &topics[..],
+                Selection::Photographer,
+                "&username=ann",
+            ),
+            (
+                "",
+                none,
+                " ",
+                &topics[..],
+                Selection::Topics,
+                "&topics=topic1%2Ctopic2",
+            ),
+            ("", none, "", none, Selection::Topics, ""),
+        ] {
+            assert_eq!(selection(query, collections, username), expected);
+            assert_eq!(
+                batch_url(query, topics, collections, username),
+                format!("{API}/photos/random?orientation=landscape&content_filter=high&count=30{filter}")
+            );
+        }
+    }
+
+    #[test]
+    fn says_when_the_photographer_is_ignored() {
+        let collections = vec!["123".to_string()];
+        assert_eq!(
+            photographer_ignored("lake", &collections, "ann").as_deref(),
+            Some("Photographer is ignored while Search is set.")
+        );
+        assert_eq!(
+            photographer_ignored(" ", &collections, "ann").as_deref(),
+            Some("Photographer is ignored while Collections is set.")
+        );
+        assert_eq!(photographer_ignored("", &[], "ann"), None);
+        assert_eq!(photographer_ignored("lake", &collections, " "), None);
+    }
+
+    #[test]
+    fn missing_collection_or_photographer_has_a_specific_error() {
+        let missing = || crate::net::explain("Unsplash", ureq::Error::StatusCode(404));
+        assert_eq!(
+            batch_error(missing(), Selection::Collections).to_string(),
+            "Unsplash couldn't find that collection"
+        );
+        assert_eq!(
+            batch_error(missing(), Selection::Photographer).to_string(),
+            "Unsplash couldn't find that photographer"
+        );
+        assert_eq!(
+            batch_error(missing(), Selection::Search).to_string(),
+            "Unsplash found nothing for that search"
+        );
+        let limited = crate::net::explain("Unsplash", ureq::Error::StatusCode(403));
+        assert!(crate::net::is_rate_limited(&batch_error(
+            limited,
+            Selection::Collections
+        )));
+    }
+
+    #[test]
     fn needs_a_key() {
-        assert!(batch(&Http::default(), "  ", "", &[]).is_err());
+        assert!(batch(&Http::default(), "  ", "", &[], &[], "").is_err());
     }
 }

@@ -97,10 +97,20 @@ const ticked = (name) => sourceBoxes().some((b) => b.dataset.source === name && 
 
 // Key fields and Topics only show for the sources that use them.
 function syncSourceFields() {
+  document.querySelector('[data-settings-panel="more"]').hidden = !ticked("unsplash");
+  if (!ticked("unsplash") && !$("settings-more").hidden) showSettingsPanel("sources");
   $("unsplash-fields").hidden = !ticked("unsplash");
   $("pexels-fields").hidden = !ticked("pexels");
   $("topics-field").hidden = !ticked("unsplash");
   $("search-field").hidden = !["unsplash", "pexels", "wallhaven"].some(ticked);
+}
+
+function showSettingsPanel(name) {
+  for (const button of document.querySelectorAll("[data-settings-panel]")) {
+    const active = button.dataset.settingsPanel === name;
+    button.setAttribute("aria-pressed", String(active));
+    $("settings-" + button.dataset.settingsPanel).hidden = !active;
+  }
 }
 
 function openSettings() {
@@ -112,6 +122,10 @@ function openSettings() {
   $("f-pexels").placeholder = snapshot.has_pexels_key ? "Leave blank to keep the current key" : "Paste your API key";
   $("f-query").value = st.query;
   $("f-topics").value = st.topics;
+  $("f-collections").value = st.collections || "";
+  $("f-username").value = st.username || "";
+  $("username-ignored").textContent = snapshot.photographer_note || "";
+  showSettingsPanel("sources");
   const interval = String(st.interval_minutes);
   if (![...$("f-interval").options].some((o) => o.value === interval)) {
     $("f-interval").add(new Option(`${st.interval_minutes} minutes`, interval));
@@ -140,6 +154,8 @@ async function saveSettings(event) {
     sources: sourceBoxes().filter((b) => b.checked).map((b) => b.dataset.source),
     query: $("f-query").value,
     topics: $("f-topics").value,
+    collections: $("f-collections").value,
+    username: $("f-username").value,
     interval_minutes: Number($("f-interval").value),
     paused: $("f-paused").checked,
     cache_cap_mb: Math.max(20, Number($("f-cap").value) || 200),
@@ -178,7 +194,14 @@ $("btn-settings").addEventListener("click", () => ($("view-settings").hidden ? o
 $("btn-cancel").addEventListener("click", closeSettings);
 $("btn-quit").addEventListener("click", () => invoke("quit"));
 $("view-settings").addEventListener("submit", saveSettings);
+for (const button of document.querySelectorAll("[data-settings-panel]")) {
+  button.addEventListener("click", () => showSettingsPanel(button.dataset.settingsPanel));
+}
 for (const box of sourceBoxes()) box.addEventListener("change", syncSourceFields);
+// The note describes the saved settings; editing them makes it stale.
+for (const id of ["f-query", "f-collections", "f-username"]) {
+  $(id).addEventListener("input", () => ($("username-ignored").textContent = ""));
+}
 $("credit").addEventListener("click", openLink);
 $("source-link").addEventListener("click", openLink);
 $("dev-link").dataset.url = "https://unsplash.com/developers";
