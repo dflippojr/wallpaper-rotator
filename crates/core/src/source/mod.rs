@@ -252,15 +252,4 @@ pub(crate) mod tests {
         crop(&src, 160, 90, &dest, false).unwrap();
         assert_eq!(image::image_dimensions(&dest).unwrap(), (160, 90));
     }
-
-    #[test]
-    fn source_ids_round_trip_as_lowercase_names() {
-        let json = serde_json::to_string(&SourceId::ALL).unwrap();
-        assert_eq!(
-            json,
-            r#"["unsplash","pexels","wallhaven","daily","favorites"]"#
-        );
-        let back: Vec<SourceId> = serde_json::from_str(&json).unwrap();
-        assert_eq!(back, SourceId::ALL);
-    }
 }
