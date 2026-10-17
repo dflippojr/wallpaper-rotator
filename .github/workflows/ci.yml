@@ -8,6 +8,21 @@ on:
 permissions:
   contents: read
 
+# No concurrency block on purpose: every run on main must finish, so `gate` has
+# a result for every main commit. If one is ever added, it must never cancel
+# main runs:
+#   concurrency:
+#     group: ci-${{ github.ref }}
+#     cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  # Minimum line coverage (percent) for `cargo llvm-cov --workspace` on Linux.
+  # Set to the measured total minus 1 point (77.11% on 2026-10-16). The floor
+  # only goes up: raise it when coverage rises, never lower it to get a PR
+  # through.
+  # scripts/check.sh reads this value.
+  COVERAGE_FLOOR: 76.1
+
 jobs:
   test:
     name: test (${{ matrix.os }})
@@ -34,6 +49,20 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
         run: cargo test --workspace
+      - name: Install cargo-llvm-cov
+        if: runner.os == 'Linux'
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-llvm-cov
+      - name: Coverage
+        if: runner.os == 'Linux'
+        run: |
+          rustup component add llvm-tools-preview
+          cargo llvm-cov --workspace --no-report
+          cargo llvm-cov report --summary-only
+          total=$(cargo llvm-cov report --json --summary-only | jq '.data[0].totals.lines.percent')
+          printf '### Coverage\n\nLine coverage: **%.2f%%** (floor %s%%)\n' "$total" "$COVERAGE_FLOOR" >> "$GITHUB_STEP_SUMMARY"
+          cargo llvm-cov report --summary-only --fail-under-lines "$COVERAGE_FLOOR" > /dev/null
 
   installers:
     runs-on: ubuntu-24.04
@@ -64,3 +93,17 @@ jobs:
           if ($errors) { $errors | ForEach-Object { $_.ToString() }; exit 1 }
           .\install.ps1 -DryRun
           .\install.ps1 -Uninstall -Purge -DryRun
+
+  # The one check a ruleset requires. It always runs and fails unless every
+  # other job succeeded (a failed, cancelled or skipped job fails the gate).
+  gate:
+    if: always()
+    needs: [test, installers, installer-windows]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Every job passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          echo "$NEEDS" | jq -e 'all(.[]; .result == "success")' > /dev/null
