@@ -107,7 +107,7 @@ jobs:
       - name: Coverage of the platform setters
         shell: bash
         run: |
-          cargo llvm-cov report --summary-only | grep -E '^(Filename|TOTAL)|src/wallpaper/' | tee coverage.txt
+          cargo llvm-cov report --summary-only | grep -E '^(Filename|TOTAL)|wallpaper[/\]' | tee coverage.txt
           { printf '### Coverage from the OS wallpaper tests\n\n```\n'; cat coverage.txt; printf '```\n'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Keep the screenshots
         if: always()
