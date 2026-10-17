@@ -38,7 +38,7 @@ use std::process::ExitCode;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{ensure, Context, Result};
 use image::{Rgb, RgbImage};
 use rotator_core::wallpaper::{self, Display, Layout};
 
@@ -166,6 +166,27 @@ fn file_is(file: &Path, want: Colour) -> Result<String> {
     Ok(rgb(sample.dominant))
 }
 
+/// Asks the OS what the desktop shows until it says `want`, for up to
+/// 10 seconds: the shell may apply a new wallpaper after the call returns.
+fn read_back(layout: &Layout, want: Colour) -> Result<String> {
+    let start = Instant::now();
+    loop {
+        match os::read_back(layout, want) {
+            Ok(says) if start.elapsed() < Duration::from_millis(100) => return Ok(says),
+            Ok(says) => {
+                return Ok(format!(
+                    "{says} (after {:.1} s)",
+                    start.elapsed().as_secs_f64()
+                ))
+            }
+            Err(e) if start.elapsed() > Duration::from_secs(10) => {
+                return Err(e.context(format!("still wrong after 10 s; {}", os::diagnose())));
+            }
+            Err(_) => sleep(Duration::from_millis(250)),
+        }
+    }
+}
+
 fn fixture(dir: &Path, name: &str, (w, h): (u32, u32), colour: Colour) -> Result<PathBuf> {
     let file = dir.join(name);
     RgbImage::from_pixel(w, h, colour.rgb()).save(&file)?;
@@ -239,7 +260,7 @@ impl Run {
         screen: &[(Region, Colour)],
     ) -> Result<()> {
         wallpaper::set(layout).context("the app's setter failed")?;
-        let os_says = os::read_back(layout, want).context("the OS read-back failed")?;
+        let os_says = read_back(layout, want).context("the OS read-back failed")?;
         let screen = self.screen_shows(&format!("{case}-{want:?}").to_lowercase(), screen)?;
         println!("  {case} {want:?}: OS says {os_says}; screen: {screen}");
         self.rows.push(Row {
@@ -339,7 +360,7 @@ fn spanned(run: &mut Run, dir: &Path, (w, h): (u32, u32)) -> Result<()> {
     );
     let layout = Layout::Spanned(stitched);
     wallpaper::set(&layout).context("the app's setter failed")?;
-    let os_says = os::read_back(&layout, Colour::Red)?;
+    let os_says = read_back(&layout, Colour::Red)?;
     let screen = run.screen_shows(
         "spanned",
         &[(LEFT_HALF, Colour::Red), (RIGHT_HALF, Colour::Blue)],
@@ -363,7 +384,7 @@ fn reconcile(run: &mut Run, dir: &Path, red: &Path, blue: &Path, size: (u32, u32
         wallpaper::reconcile(&current, dir)?,
         "reconcile left our stale red photo up"
     );
-    let os_says = os::read_back(&current, Colour::Blue)?;
+    let os_says = read_back(&current, Colour::Blue)?;
     let screen = run.screen_shows("reconcile-blue", &[(DESKTOP, Colour::Blue)])?;
     println!("  reconcile stale red -> Blue: OS says {os_says}; screen: {screen}");
     run.rows.push(Row {
@@ -386,7 +407,7 @@ fn reconcile(run: &mut Run, dir: &Path, red: &Path, blue: &Path, size: (u32, u32
         !wallpaper::reconcile(&current, dir)?,
         "reconcile replaced a wallpaper from outside the app's folder"
     );
-    os::read_back(&users, Colour::Red).context("reconcile replaced the user's wallpaper")?;
+    read_back(&users, Colour::Red).context("reconcile replaced the user's wallpaper")?;
     Ok(())
 }
 
@@ -567,6 +588,37 @@ mod os {
         Ok(says.join("; "))
     }
 
+    /// What else Windows says about the wallpaper, for a failure message.
+    pub fn diagnose() -> String {
+        let mut out = format!("SPI_GETDESKWALLPAPER = {:?}", system_wallpaper().ok());
+        for (key, value) in [
+            (r"HKCU\Control Panel\Desktop", "Wallpaper"),
+            (
+                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\System",
+                "Wallpaper",
+            ),
+            (
+                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\ActiveDesktop",
+                "NoChangingWallPaper",
+            ),
+        ] {
+            let got = Command::new("reg")
+                .args(["query", key, "/v", value])
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .unwrap_or_default();
+            let got = got.lines().last().unwrap_or("(not set)").trim().to_string();
+            out.push_str(&format!("; {key} {value}: {got}"));
+        }
+        let explorer = Command::new("tasklist")
+            .args(["/FI", "IMAGENAME eq explorer.exe", "/NH"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains("explorer.exe"))
+            .unwrap_or(false);
+        out.push_str(&format!("; explorer.exe running: {explorer}"));
+        out
+    }
+
     pub struct Saved {
         position: DESKTOP_WALLPAPER_POSITION,
         monitors: Vec<(String, String)>,
@@ -678,13 +730,24 @@ mod os {
         Ok(says.join("; "))
     }
 
-    pub struct Saved(
-        Vec<(
-            Retained<NSScreen>,
-            Retained<NSURL>,
-            Retained<NSDictionary<NSString, AnyObject>>,
-        )>,
-    );
+    /// Every screen's wallpaper, for a failure message.
+    pub fn diagnose() -> String {
+        let workspace = NSWorkspace::sharedWorkspace();
+        screens()
+            .map(|screens| {
+                screens
+                    .iter()
+                    .map(|s| format!("{:?}", shown(&workspace, s)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .map(|all| format!("desktopImageURL for each screen: {all}"))
+            .unwrap_or_else(|e| e.to_string())
+    }
+
+    type Options = Retained<NSDictionary<NSString, AnyObject>>;
+
+    pub struct Saved(Vec<(Retained<NSScreen>, Retained<NSURL>, Options)>);
 
     pub fn save() -> Result<Saved> {
         let workspace = NSWorkspace::sharedWorkspace();
@@ -782,7 +845,7 @@ mod os {
         let (file, option) = match layout {
             Layout::Same(file) => (file, "'zoom'"),
             Layout::Spanned(file) => (file, "'spanned'"),
-            Layout::Each(_) => bail!("GNOME has no per-display wallpaper"),
+            Layout::Each(_) => anyhow::bail!("GNOME has no per-display wallpaper"),
         };
         let want_uri = uri(file)?;
         for key in ["picture-uri", "picture-uri-dark"] {
@@ -808,6 +871,14 @@ mod os {
         Ok(format!(
             "picture-uri = picture-uri-dark = {want_uri} ({colour}), picture-options = {got}"
         ))
+    }
+
+    /// Every background key, for a failure message.
+    pub fn diagnose() -> String {
+        KEYS.iter()
+            .map(|key| format!("{key} = {}", get(key).unwrap_or_else(|e| e.to_string())))
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 
     pub struct Saved(Vec<(&'static str, String)>);
