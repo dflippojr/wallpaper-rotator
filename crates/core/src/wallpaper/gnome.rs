@@ -62,4 +62,11 @@ mod tests {
             "file:///home/d/.cache/Wallpaper%20Rotator/images/%C3%A4.jpg"
         );
     }
+
+    #[test]
+    fn refuses_a_photo_per_display_before_touching_gsettings() {
+        let each = Layout::Each(vec![("a".into(), "a.jpg".into())]);
+        let err = set(&each).unwrap_err().to_string();
+        assert!(err.contains("stitched"), "{err}");
+    }
 }
