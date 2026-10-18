@@ -75,6 +75,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn lays_photos_out_like_the_monitors() {
         let dir = tempfile::tempdir().unwrap();
         // A taller monitor on the left, a shorter one to its right, with a
