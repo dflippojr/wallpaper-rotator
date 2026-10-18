@@ -1,0 +1,62 @@
+# Agent notes for wallpaper-rotator
+
+A Tauri tray app (`app/`) on top of a platform-independent core (`crates/core`) that fetches photos and sets them as the desktop wallpaper on macOS, Windows and GNOME. See the README for building and releasing.
+
+## How to prove a change works
+
+### 1. Run the local gate
+
+One command runs what the CI `test` job runs on your OS:
+
+```sh
+scripts/check.sh                                          # Linux, macOS (bash)
+powershell -ExecutionPolicy Bypass -File scripts\check.ps1   # Windows (PowerShell 5.1 or 7)
+```
+
+Both run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace`. On Linux, `check.sh` also runs `cargo llvm-cov --workspace` against the coverage floor (`COVERAGE_FLOOR` in `.github/workflows/ci.yml`). It needs `rustup component add llvm-tools-preview` and `cargo install cargo-llvm-cov --locked`.
+
+The floor only goes up. If your change raises coverage, raise `COVERAGE_FLOOR` to the new total minus 1 point. Never lower it, delete tests or add `#[ignore]` to get a PR through. If you must, say so under `### Gate changes` in the PR.
+
+CI's required check is `gate`. It passes only when every other job (`test` on all three OSes, `installers`, `installer-windows`) succeeded.
+
+### 2. Check the wallpaper on the real OS
+
+Unit tests don't prove a photo ends up on the desktop. The real-OS check (set the wallpaper, then read it back from the OS) is tracked in #14 and doesn't exist yet. Until it does, a change to `crates/core/src/wallpaper/` or to rotation needs a manual run on each affected OS:
+
+```sh
+cargo run -p rotator-core --bin wallpaper-rotator-cli -- rotate
+```
+
+Then read the wallpaper back from the OS, not from the app. Don't run `rotate` while the tray app is running.
+
+### 3. Reach the Mac
+
+A MacBook Pro is reachable through Orca. Use it for anything that touches macOS:
+
+```sh
+orca terminal --environment "MacBook Pro"
+git clone https://github.com/dflippojr/wallpaper-rotator.git   # public repo: clone over HTTPS
+cd wallpaper-rotator && git checkout <your branch> && scripts/check.sh
+```
+
+"No Mac was available" is not a reason to skip a macOS check. If the Mac is unreachable, say so in `### Not verified` with the error you got.
+
+### 4. Fill in the `## Proof` table in the PR
+
+Every PR body has a `## Proof` table (dflippojr/.github#13), with one row per acceptance criterion in the issue:
+
+```markdown
+## Proof
+
+| Acceptance criterion | How verified (command, test name, verify skill) | Evidence (output excerpt, artifact link, red-before/green-after) |
+| --- | --- | --- |
+| Refresh changes only the selected display | `cargo test -p rotator-core refresh_one_display`; manual rotate on the Mac | `test refresh_one_display ... ok`; before/after wallpaper paths |
+
+### Not verified
+What you did not check, and why.
+
+### Gate changes
+Tests deleted or skipped, or config loosened, with the reason. Empty if none.
+```
+
+**Never claim an OS was verified unless you ran it there.** CI passing on `macos-latest` proves it compiles and the unit tests pass. It doesn't prove the wallpaper changed on a Mac.
