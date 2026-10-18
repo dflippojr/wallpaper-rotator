@@ -21,6 +21,13 @@ CI's required checks are `gate` and `gate-guard`. `gate` passes only when every 
 
 `gate-guard` is the shared guard from dflippojr/.github. It fails a PR that deletes tests, adds `#[ignore]` or retries, or edits workflows or coverage config, unless the owner applied `gate-change-approved`. The required `gate-guard` check comes from `.github/workflows/gate-guard-target.yml`, which runs from `main` under `pull_request_target`, so a PR can't rewrite its own judge. It counts the label only when the owner applied it after the newest push, so a push after an approval needs a new one. Only the owner applies that label; if your PR needs it, say so in the PR body.
 
+The CLI journeys in `crates/core/tests/cli.rs` run the real binary with a fresh
+`WALLPAPER_ROTATOR_HOME` per test, three generated favorite PNGs,
+`ROTATOR_SIZE=320x200` and `rotate --dry-run`. The home override is shared by
+the CLI and tray app: config, state, log, images and default favorites all live
+under that root. Dry runs update state and cache but never call the OS wallpaper
+setter. Keep every automated CLI rotation in dry-run mode.
+
 ### 2. Check the wallpaper on the real OS
 
 Unit tests don't prove a photo ends up on the desktop. The real-OS check (set the wallpaper, then read it back from the OS) is tracked in #14 and doesn't exist yet. Until it does, a change to `crates/core/src/wallpaper/` or to rotation needs a manual run on each affected OS:

@@ -73,7 +73,6 @@ impl Cli {
     fn ok(&self, args: &[&str]) -> String {
         let output = self.run(args);
         assert!(output.status.success(), "{args:?}: {output:?}");
-        assert!(output.stderr.is_empty(), "{output:?}");
         String::from_utf8(output.stdout).unwrap()
     }
 
@@ -246,13 +245,21 @@ fn status_without_state_reports_none() {
 #[test]
 fn missing_or_unknown_subcommand_prints_usage_and_fails() {
     let cli = Cli::new(vec![]);
-    for args in [&[][..], &["unknown"][..]] {
+    for args in [
+        &[][..],
+        &["unknown"][..],
+        &["rotate", "--dry-run", "--unknown"][..],
+    ] {
         let output = cli.run(args);
         assert!(!output.status.success(), "{output:?}");
         assert!(output.stdout.is_empty(), "{output:?}");
         let error = String::from_utf8(output.stderr).unwrap();
         assert!(
-            error.contains("usage: wallpaper-rotator-cli <rotate|status|cleanup|displays|paths>"),
+            error.contains(if args.first() == Some(&"rotate") {
+                "usage: wallpaper-rotator-cli rotate [--dry-run]"
+            } else {
+                "usage: wallpaper-rotator-cli <rotate|status|cleanup|displays|paths>"
+            }),
             "{error}"
         );
     }

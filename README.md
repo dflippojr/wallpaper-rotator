@@ -179,7 +179,7 @@ Before opening a PR, run the same checks CI runs: `scripts/check.sh` (or `script
 
 For an installable bundle (`.app`/`.dmg`, `.msi`, `.deb`), install the Tauri CLI (`cargo install tauri-cli --version "^2"`) and run `cargo tauri build` inside `app/`.
 
-The headless CLI is handy for testing: `cargo run -p rotator-core --bin wallpaper-rotator-cli -- rotate` (also `status`, `cleanup`, `displays`, `paths`). Don't run `rotate` while the tray app is running.
+The headless CLI is handy for testing: `cargo run -p rotator-core --bin wallpaper-rotator-cli -- rotate` (also `status`, `cleanup`, `displays`, `paths`). Use `rotate --dry-run` to print `would set <layout>` instead of applying the desktop wallpaper; it still fetches photos and updates the state and cache. `ROTATOR_SIZE=320x200` overrides the detected display size. Set `WALLPAPER_ROTATOR_HOME` to a separate root to keep the CLI and tray app's config, state, log, images and default favorites there (`paths` prints all five paths). Don't run `rotate`, including a dry run, while the tray app manages the same root.
 
 ### Photo sources against the real APIs
 
