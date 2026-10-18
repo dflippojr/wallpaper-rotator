@@ -7,6 +7,10 @@ on:
 
 permissions:
   contents: read
+  # gate-guard reads the pull request's labels and the owner's label events.
+  # A called workflow can't hold more than its caller, so both are granted here.
+  issues: read
+  pull-requests: read
 
 # No concurrency block on purpose: every run on main must finish, so `gate` has
 # a result for every main commit. If one is ever added, it must never cancel
@@ -94,11 +98,30 @@ jobs:
           .\install.ps1 -DryRun
           .\install.ps1 -Uninstall -Purge -DryRun
 
-  # The one check a ruleset requires. It always runs and fails unless every
-  # other job succeeded (a failed, cancelled or skipped job fails the gate).
+  # The shared gate guard (dflippojr/.github), pinned by full SHA: fails a pull
+  # request that deletes tests, adds #[ignore], adds retries, or edits
+  # workflows or coverage config, unless the owner applied gate-change-approved.
+  # guard-ref names the same SHA, so the script that judges the pull request is
+  # the one that was reviewed. It checks pull requests only (a push prints a
+  # notice). Labels are read when the job runs: after the owner applies one,
+  # re-run this job.
+  # This job is an early signal inside gate, not the judge: it runs from the
+  # pull request's head, so a pull request can replace it, and it accepts a
+  # label applied before the newest push. The trusted copy is
+  # gate-guard-target.yml, which runs from main and posts the gate-guard check
+  # the ruleset requires.
+  gate-guard:
+    uses: dflippojr/.github/.github/workflows/gate-guard.yml@e2c7fae8508be0359f3abaf136caade46ee7479c
+    with:
+      guard-ref: e2c7fae8508be0359f3abaf136caade46ee7479c
+      require-owner-label-actor: true
+
+  # The check a ruleset requires, with gate-guard from gate-guard-target.yml.
+  # It always runs and fails unless every other job succeeded (a failed,
+  # cancelled or skipped job fails the gate).
   gate:
     if: always()
-    needs: [test, installers, installer-windows]
+    needs: [test, installers, installer-windows, gate-guard]
     runs-on: ubuntu-24.04
     steps:
       - name: Every job passed
