@@ -17,7 +17,9 @@ Both run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -
 
 The floor only goes up. If your change raises coverage, raise `COVERAGE_FLOOR` to the new total minus 1 point. Never lower it, delete tests or add `#[ignore]` to get a PR through. If you must, say so under `### Gate changes` in the PR.
 
-CI's required check is `gate`. It passes only when every other job (`test` on all three OSes, `installers`, `installer-windows`) succeeded.
+CI's required checks are `gate` and `gate-guard`. `gate` passes only when every other job (`test` on all three OSes, `installers`, `installer-windows`, `gate-guard`) succeeded.
+
+`gate-guard` is the shared guard from dflippojr/.github. It fails a PR that deletes tests, adds `#[ignore]` or retries, or edits workflows or coverage config, unless the owner applied `gate-change-approved`. The required `gate-guard` check comes from `.github/workflows/gate-guard-target.yml`, which runs from `main` under `pull_request_target`, so a PR can't rewrite its own judge. It counts the label only when the owner applied it after the newest push, so a push after an approval needs a new one. Only the owner applies that label; if your PR needs it, say so in the PR body.
 
 ### 2. Check the wallpaper on the real OS
 

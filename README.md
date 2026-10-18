@@ -213,6 +213,10 @@ The installers fetch the files attached to the latest GitHub release. To publish
 
 To build the installers by hand instead, use `scripts/build-release.sh linux|windows|macos`. Linux and Windows build in Docker (Windows is cross-built, so no MSVC is needed); the macOS build runs on a Mac. Then publish with `gh release create vX.Y.Z dist/*`.
 
+### Branch ruleset
+
+The ruleset for `main` requires a pull request and the status checks `gate` (from `ci.yml`) and `gate-guard`, both from GitHub Actions. `gate-guard` is the check run that `.github/workflows/gate-guard-target.yml` posts from `main` under `pull_request_target`. A pull request can't rewrite it, and it counts the owner's `gate-change-approved` label only when the label was applied after the newest push.
+
 ## How it works
 
 | Piece | Where |
