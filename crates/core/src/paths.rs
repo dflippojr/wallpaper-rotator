@@ -18,6 +18,9 @@ pub struct Paths {
 
 impl Paths {
     pub fn discover() -> Result<Self> {
+        if let Some(root) = std::env::var_os("WALLPAPER_ROTATOR_HOME") {
+            return Ok(Self::under(Path::new(&root)));
+        }
         let dirs = ProjectDirs::from("dev", "dflippojr", "Wallpaper Rotator")
             .context("could not find a home directory")?;
         let favorites = UserDirs::new()
@@ -33,7 +36,7 @@ impl Paths {
         })
     }
 
-    /// Everything under one root folder. Used by tests.
+    /// Everything under one root folder, including when WALLPAPER_ROTATOR_HOME is set.
     pub fn under(root: &Path) -> Self {
         Self {
             config_file: root.join("config.toml"),

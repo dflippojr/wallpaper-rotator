@@ -1,7 +1,7 @@
 //! Headless control for testing and scripting:
 //!
-//!   wallpaper-rotator-cli rotate   set a new wallpaper now (ROTATOR_SIZE=WxH
-//!                                  sizes it where displays can't be listed)
+//!   wallpaper-rotator-cli rotate [--dry-run]   rotate now (ROTATOR_SIZE=WxH
+//!                                           overrides the display size)
 //!   wallpaper-rotator-cli status   show the current wallpaper and cache size
 //!   wallpaper-rotator-cli cleanup  enforce the cache rules
 //!   wallpaper-rotator-cli displays list displays and the photo size for each
@@ -21,8 +21,18 @@ use rotator_core::wallpaper::{self, Display};
 
 fn main() -> Result<()> {
     let paths = Paths::discover()?;
-    match std::env::args().nth(1).as_deref() {
-        Some("rotate") => rotate(paths),
+    let mut args = std::env::args().skip(1);
+    let command = args.next();
+    let options: Vec<_> = args.collect();
+    match command.as_deref() {
+        Some("rotate") => {
+            let dry_run = match options.as_slice() {
+                [] => false,
+                [flag] if flag == "--dry-run" => true,
+                _ => bail!("usage: wallpaper-rotator-cli rotate [--dry-run]"),
+            };
+            rotate(paths, dry_run)
+        }
         Some("status") => status(&paths),
         Some("cleanup") => {
             let config = Config::load_or_create(&paths.config_file)?;
@@ -60,12 +70,19 @@ fn main() -> Result<()> {
     }
 }
 
-fn rotate(paths: Paths) -> Result<()> {
+fn rotate(paths: Paths, dry_run: bool) -> Result<()> {
     let hooks = Hooks {
-        apply: Box::new(wallpaper::set),
+        apply: Box::new(move |layout| {
+            if dry_run {
+                println!("would set {layout:?}");
+                Ok(())
+            } else {
+                wallpaper::set(layout)
+            }
+        }),
         displays: Box::new(|| {
-            wallpaper::displays()
-                .or_else(size_from_env)
+            size_from_env()
+                .or_else(wallpaper::displays)
                 .unwrap_or_default()
         }),
         notify: Box::new(|_| {}),
