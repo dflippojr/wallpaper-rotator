@@ -8,6 +8,10 @@ on:
   schedule:
     - cron: "17 6 * * *"
   workflow_dispatch:
+  # TEMPORARY: proves the workflow runs before it reaches main. Removed in
+  # the next commit.
+  push:
+    branches: [dflippojr/photo-sources-real-apis]
 
 permissions:
   contents: read
