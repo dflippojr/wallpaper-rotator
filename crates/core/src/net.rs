@@ -214,9 +214,4 @@ mod tests {
         );
         assert_eq!(encode("a,b"), "a%2Cb");
     }
-
-    #[test]
-    fn part_files_keep_the_extension() {
-        assert_eq!(part_path(Path::new("/x/a.jpg")), Path::new("/x/a.jpg.part"));
-    }
 }

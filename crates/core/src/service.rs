@@ -1375,11 +1375,20 @@ mod tests {
 
     #[test]
     fn notices_name_the_fallback() {
-        let dir = tempfile::tempdir().unwrap();
-        let svc = service(dir.path());
-        let mut bing = photo(&svc, "bing-20261014-x", None);
-        bing.source = SourceId::Daily;
-        let set = Set::single(bing);
+        let set = Set::single(Wallpaper {
+            id: "bing-20261014-x".into(),
+            file: PathBuf::new(),
+            author: String::new(),
+            author_url: String::new(),
+            photo_url: String::new(),
+            preview_url: String::new(),
+            location: None,
+            description: None,
+            download_location: String::new(),
+            color: None,
+            source: SourceId::Daily,
+            display: None,
+        });
         assert_eq!(
             fallback_notice(&["Unsplash is rate-limited".into()], &set),
             "Unsplash is rate-limited, so this one is from Bing"

@@ -262,7 +262,7 @@ mod tests {
         for old in ["a", "b", "c"] {
             wallpaper(images, old, 100);
         }
-        fs::write(images.join("half.jpg.part"), b"xx").unwrap();
+        fs::write(crate::net::part_path(&images.join("half.jpg")), b"xx").unwrap();
 
         let report = cleanup(images, &mut state, u64::MAX).unwrap();
 
