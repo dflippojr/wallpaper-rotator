@@ -19,7 +19,12 @@ pub const SOURCES: [&str; 5] = ["Unsplash", "Pexels", "Wallhaven", "Bing", "Wiki
 const KEEP: usize = 4;
 /// Fields about the account behind the key, not the photo. Removed from
 /// recordings.
-const ACCOUNT_FIELDS: [&str; 3] = ["current_user_collections", "liked_by_user", "liked"];
+const ACCOUNT_FIELDS: [&str; 4] = [
+    "bookmarked",
+    "current_user_collections",
+    "liked_by_user",
+    "liked",
+];
 
 /// The keys for the keyed sources; empty when not set.
 #[derive(Debug, Clone, Default)]

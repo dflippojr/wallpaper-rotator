@@ -334,42 +334,82 @@ pub fn with_utm(url: &str) -> String {
 mod tests {
     use super::*;
 
-    /// A `/photos/random` reply; the worker journeys serve it too.
+    /// A recorded `/photos/random` reply; the worker journeys serve it too.
     const SAMPLE: &str = include_str!("../../tests/fixtures/sources/unsplash/random.json");
+    /// A recorded `/photos/random?query=mountains` reply.
+    const SEARCH: &str = include_str!("../../tests/fixtures/sources/unsplash/search.json");
 
     #[test]
     fn turns_photos_into_candidates() {
-        let photos: Vec<Photo> = serde_json::from_str(SAMPLE).unwrap();
-        let c = candidate(photos[0].clone());
-        assert_eq!(c.id, "abc123");
-        assert_eq!(c.author, "Mario Dobelmann");
-        assert_eq!(c.location.as_deref(), Some("Kirchsee, Germany"));
-        assert_eq!(c.description.as_deref(), Some("a lake at sunset"));
+        let photos = parse_batch(SAMPLE).unwrap();
+        assert_eq!(photos.len(), 4);
+        let c = photos[3].clone();
+        assert_eq!(c.id, "I-B7DT1Sfu8");
+        assert_eq!((c.width, c.height), (6000, 4000));
+        assert_eq!(c.author, "Andreas Schmidt");
+        assert_eq!(
+            c.author_url,
+            format!("https://unsplash.com/@as_capture?{UTM}")
+        );
+        assert_eq!(
+            c.location.as_deref(),
+            Some("Lummenfelsen, Helgoland, Deutschland")
+        );
+        // No description, so the alt text stands in.
+        assert_eq!(
+            c.description.as_deref(),
+            Some("A fluffy white northern gannet chick among other gannets in soft golden light")
+        );
         assert!(c.photo_url.ends_with(UTM));
-        assert!(c.track_url.unwrap().contains("/download"));
+        assert!(c
+            .track_url
+            .unwrap()
+            .starts_with("https://api.unsplash.com/photos/I-B7DT1Sfu8/download?ixid="));
         let Image::Sized { url } = c.image else {
             panic!()
         };
+        assert!(
+            url.starts_with("https://images.unsplash.com/photo-1791829187775-fe732be6d654?ixid=")
+        );
+        assert!(url.ends_with("&ixlib=rb-4.1.0&w={w}&h={h}&fit=crop&crop=entropy&fm=jpg&q=85"));
+
         assert_eq!(
-            url,
-            "https://images.unsplash.com/photo-1?ixid=x&ixlib=rb-4.0.3&w={w}&h={h}&fit=crop&crop=entropy&fm=jpg&q=85"
+            photos[0].description.as_deref(),
+            Some("Polaroid 20 x 24, from Photopia series")
+        );
+        let search = parse_batch(SEARCH).unwrap();
+        assert_eq!(
+            search[0].location.as_deref(),
+            Some("Zion National Park, United States")
         );
     }
 
     #[test]
     fn location_is_optional() {
-        let without = SAMPLE.replace(
-            r#""location": {"name": null, "city": "Kirchsee", "country": "Germany"}"#,
-            r#""location": null"#,
-        );
-        let photos: Vec<Photo> = serde_json::from_str(&without).unwrap();
-        assert!(photos[0].location.is_none());
+        // Recorded: a location whose name, city and country are all null.
+        let photos = parse_batch(SAMPLE).unwrap();
+        assert_eq!(photos[0].location, None);
+        let mut reply: serde_json::Value = serde_json::from_str(SAMPLE).unwrap();
+        reply[3]["location"] = serde_json::Value::Null;
+        assert_eq!(parse_batch(&reply.to_string()).unwrap()[3].location, None);
         let empty = Location {
             name: Some(" ".into()),
             city: None,
             country: Some("".into()),
         };
         assert_eq!(empty.label(), None);
+        let unnamed = Location {
+            name: None,
+            city: Some("Kirchsee".into()),
+            country: Some("Germany".into()),
+        };
+        assert_eq!(unnamed.label().as_deref(), Some("Kirchsee, Germany"));
+    }
+
+    #[test]
+    fn topics_resolve_to_their_id() {
+        let topic = include_str!("../../tests/fixtures/sources/unsplash/topic.json");
+        assert_eq!(parse_topic(topic).unwrap(), "bo8jQKTaE0Y");
     }
 
     #[test]
