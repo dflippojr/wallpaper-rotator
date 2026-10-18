@@ -302,6 +302,30 @@ pub fn redact(text: &str) -> String {
     out
 }
 
+/// `text` with each of `keys`, in every form [`key_forms`] gives, and any
+/// other credential [`redact`] finds replaced by [`REDACTED`]. A reply the
+/// parser rejects can quote any value back, a key too, with no marker
+/// around it, so whatever the app logs or shows goes through here.
+pub fn scrub(text: &str, keys: &[&str]) -> String {
+    let mut text = text.to_string();
+    for key in keys.iter().map(|k| k.trim()).filter(|k| !k.is_empty()) {
+        for form in key_forms(key) {
+            text = text.replace(&form, REDACTED);
+        }
+    }
+    redact(&text)
+}
+
+/// A key as is, percent-encoded and JSON-escaped.
+pub fn key_forms(key: &str) -> [String; 3] {
+    let json = serde_json::to_string(key).unwrap_or_default();
+    [
+        key.to_string(),
+        encode(key),
+        json.trim_matches('"').to_string(),
+    ]
+}
+
 /// Percent-encodes a URL query component.
 pub fn encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -384,6 +408,22 @@ mod tests {
         }
         let error = parse::<Vec<u32>>("Unsplash", r#"["?client_id=s3cret"]"#).unwrap_err();
         assert!(!error.to_string().contains("s3cret"), "{error}");
+    }
+
+    #[test]
+    fn scrubs_bare_keys() {
+        let error = parse::<Vec<u32>>("Unsplash", r#"["FAKE-key/0"]"#)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("FAKE-key/0"), "no marker, so not redacted");
+        assert_eq!(
+            scrub(&error, &["", " FAKE-key/0 "]),
+            error.replace("FAKE-key/0", REDACTED)
+        );
+        assert_eq!(
+            scrub("q=FAKE-key%2F0 client_id=x", &["FAKE-key/0"]),
+            "q=[redacted] client_id=[redacted]"
+        );
     }
 
     #[test]

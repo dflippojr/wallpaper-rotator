@@ -504,3 +504,46 @@ fn unsplash_errors_say_what_went_wrong() {
         assert!(w.applied().is_empty());
     }
 }
+
+#[test]
+fn errors_and_logs_never_show_the_configured_keys() {
+    // Fake keys without any credential marker (`client_id=` ...), quoted
+    // back by a reply the parser rejects.
+    let (unsplash_key, pexels_key) = ("FAKE-unsplash-key-0000", "FAKE-pexels-key-1111");
+    let mut w = World::new(
+        Config {
+            access_key: unsplash_key.into(),
+            pexels_key: pexels_key.into(),
+            ..config(&[SourceId::Unsplash, SourceId::Pexels])
+        },
+        vec![screen("1", 160, 90)],
+    );
+    w.api.reply(
+        Route::UnsplashRandom,
+        &format!(r#"[{{"width":"{unsplash_key}"}}]"#),
+    );
+    for route in [Route::PexelsSearch, Route::PexelsCurated] {
+        w.api.reply(
+            route,
+            &format!(r#"{{"photos":[{{"width":"{pexels_key}"}}]}}"#),
+        );
+    }
+
+    let snap = w.run(Command::Next(None));
+
+    let error = snap.error.expect("no source could give a photo");
+    let log = fs::read_to_string(&w.paths.log_file).unwrap();
+    // Both parser errors reached the log, so there was something to leak.
+    assert!(
+        log.contains("Unsplash sent a reply this app could not read"),
+        "{log}"
+    );
+    assert!(
+        log.contains("Pexels sent a reply this app could not read"),
+        "{log}"
+    );
+    for key in [unsplash_key, pexels_key] {
+        assert!(!error.contains(key), "a key leaked into the error: {error}");
+        assert!(!log.contains(key), "a key leaked into the log: {log}");
+    }
+}

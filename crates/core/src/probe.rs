@@ -10,7 +10,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde_json::Value;
 
 use crate::config::Config;
-use crate::net::{encode, redact, Call, Http, REDACTED};
+use crate::net::{key_forms, scrub, Call, Http};
 use crate::source::{daily, image_url, pexels, unsplash, wallhaven, Candidate};
 
 /// The sources the live check calls, by their API names.
@@ -61,33 +61,16 @@ impl Keys {
             .filter(|k| !k.is_empty())
     }
 
-    /// `text` with every key, in each form [`contains_key`] finds, and any
-    /// other credential [`redact`] finds replaced by [`REDACTED`]. Every
-    /// error and report the recorder and the live check print goes
-    /// through here.
+    /// `text` [`scrub`]bed of these keys, in each form [`contains_key`]
+    /// finds, and of any other credential. Every error and report the
+    /// recorder and the live check print goes through here.
     pub fn scrub(&self, text: &str) -> String {
-        let mut text = text.to_string();
-        for key in self.all() {
-            for form in key_forms(key) {
-                text = text.replace(&form, REDACTED);
-            }
-        }
-        redact(&text)
+        scrub(text, &self.all().collect::<Vec<_>>())
     }
 
     fn scrub_error(&self, error: anyhow::Error) -> anyhow::Error {
         anyhow!(self.scrub(&format!("{error:#}")))
     }
-}
-
-/// A key as is, percent-encoded and JSON-escaped.
-fn key_forms(key: &str) -> [String; 3] {
-    let json = serde_json::to_string(key).unwrap_or_default();
-    [
-        key.to_string(),
-        encode(key),
-        json.trim_matches('"').to_string(),
-    ]
 }
 
 /// True when `text` holds any of the keys, as is, percent-encoded or
