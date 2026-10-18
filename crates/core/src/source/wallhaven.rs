@@ -82,14 +82,18 @@ mod tests {
 
     #[test]
     fn parses_search_results() {
-        let page: Page = serde_json::from_str(SAMPLE).unwrap();
-        let c = candidate(page.data.into_iter().next().unwrap());
-        assert_eq!((c.width, c.height), (5184, 3456));
-        assert_eq!(c.color.as_deref(), Some("#999999"));
+        let photos = parse_search(SAMPLE).unwrap();
+        assert_eq!(photos.len(), 4);
+        let c = &photos[0];
+        assert_eq!(c.id, "o3v5kl");
+        assert_eq!((c.width, c.height), (3840, 2160));
+        assert_eq!(c.color.as_deref(), Some("#000000"));
+        assert_eq!(c.photo_url, "https://wallhaven.cc/w/o3v5kl");
+        assert_eq!(c.preview_url, "https://th.wallhaven.cc/lg/o3/o3v5kl.jpg");
         assert_eq!(
             c.image,
             Image::Full {
-                url: "https://w.wallhaven.cc/full/d5/wallhaven-d5wlmj.jpg".into()
+                url: "https://w.wallhaven.cc/full/o3/wallhaven-o3v5kl.jpg".into()
             }
         );
     }

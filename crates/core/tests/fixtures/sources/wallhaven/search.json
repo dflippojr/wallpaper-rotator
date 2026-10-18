@@ -1,6 +1,132 @@
-{"data": [{"id": "d5wlmj", "url": "https://wallhaven.cc/w/d5wlmj",
-    "resolution": "5184x3456", "dimension_x": 5184, "dimension_y": 3456,
-    "path": "https://w.wallhaven.cc/full/d5/wallhaven-d5wlmj.jpg", "file_type": "image/jpeg",
-    "colors": ["#999999", "#abbcda"], "category": "general", "purity": "sfw",
-    "thumbs": {"large": "https://th.wallhaven.cc/lg/d5/d5wlmj.jpg", "original": "o", "small": "s"}}],
-    "meta": {"current_page": 1, "last_page": 212, "per_page": 24, "total": 5068, "seed": "ONmLxh"}}
+{
+  "data": [
+    {
+      "category": "general",
+      "colors": [
+        "#000000",
+        "#663300",
+        "#424153",
+        "#996633",
+        "#999999"
+      ],
+      "created_at": "2022-02-06 16:40:27",
+      "dimension_x": 3840,
+      "dimension_y": 2160,
+      "favorites": 5,
+      "file_size": 399488,
+      "file_type": "image/jpeg",
+      "id": "o3v5kl",
+      "path": "https://w.wallhaven.cc/full/o3/wallhaven-o3v5kl.jpg",
+      "purity": "sfw",
+      "ratio": "1.78",
+      "resolution": "3840x2160",
+      "short_url": "https://whvn.cc/o3v5kl",
+      "source": "",
+      "thumbs": {
+        "large": "https://th.wallhaven.cc/lg/o3/o3v5kl.jpg",
+        "original": "https://th.wallhaven.cc/orig/o3/o3v5kl.jpg",
+        "small": "https://th.wallhaven.cc/small/o3/o3v5kl.jpg"
+      },
+      "url": "https://wallhaven.cc/w/o3v5kl",
+      "views": 3373
+    },
+    {
+      "category": "general",
+      "colors": [
+        "#000000",
+        "#663300",
+        "#424153",
+        "#996633",
+        "#999999"
+      ],
+      "created_at": "2022-12-25 15:37:57",
+      "dimension_x": 3440,
+      "dimension_y": 1440,
+      "favorites": 14,
+      "file_size": 6138410,
+      "file_type": "image/png",
+      "id": "qz28d7",
+      "path": "https://w.wallhaven.cc/full/qz/wallhaven-qz28d7.png",
+      "purity": "sfw",
+      "ratio": "2.39",
+      "resolution": "3440x1440",
+      "short_url": "https://whvn.cc/qz28d7",
+      "source": "",
+      "thumbs": {
+        "large": "https://th.wallhaven.cc/lg/qz/qz28d7.jpg",
+        "original": "https://th.wallhaven.cc/orig/qz/qz28d7.jpg",
+        "small": "https://th.wallhaven.cc/small/qz/qz28d7.jpg"
+      },
+      "url": "https://wallhaven.cc/w/qz28d7",
+      "views": 3282
+    },
+    {
+      "category": "general",
+      "colors": [
+        "#000000",
+        "#424153",
+        "#cccccc",
+        "#999999",
+        "#abbcda"
+      ],
+      "created_at": "2015-10-18 19:08:21",
+      "dimension_x": 2560,
+      "dimension_y": 1440,
+      "favorites": 42,
+      "file_size": 486360,
+      "file_type": "image/jpeg",
+      "id": "42qm9g",
+      "path": "https://w.wallhaven.cc/full/42/wallhaven-42qm9g.jpg",
+      "purity": "sfw",
+      "ratio": "1.78",
+      "resolution": "2560x1440",
+      "short_url": "https://whvn.cc/42qm9g",
+      "source": "https://www.flickr.com/photos/thefourthphotography",
+      "thumbs": {
+        "large": "https://th.wallhaven.cc/lg/42/42qm9g.jpg",
+        "original": "https://th.wallhaven.cc/orig/42/42qm9g.jpg",
+        "small": "https://th.wallhaven.cc/small/42/42qm9g.jpg"
+      },
+      "url": "https://wallhaven.cc/w/42qm9g",
+      "views": 5219
+    },
+    {
+      "category": "general",
+      "colors": [
+        "#000000",
+        "#663300",
+        "#424153",
+        "#996633",
+        "#cc6633"
+      ],
+      "created_at": "2021-03-21 11:30:12",
+      "dimension_x": 1920,
+      "dimension_y": 1080,
+      "favorites": 23,
+      "file_size": 3225970,
+      "file_type": "image/png",
+      "id": "pk97re",
+      "path": "https://w.wallhaven.cc/full/pk/wallhaven-pk97re.png",
+      "purity": "sfw",
+      "ratio": "1.78",
+      "resolution": "1920x1080",
+      "short_url": "https://whvn.cc/pk97re",
+      "source": "",
+      "thumbs": {
+        "large": "https://th.wallhaven.cc/lg/pk/pk97re.jpg",
+        "original": "https://th.wallhaven.cc/orig/pk/pk97re.jpg",
+        "small": "https://th.wallhaven.cc/small/pk/pk97re.jpg"
+      },
+      "url": "https://wallhaven.cc/w/pk97re",
+      "views": 5810
+    }
+  ],
+  "meta": {
+    "current_page": 1,
+    "last_page": 11222,
+    "per_page": 24,
+    "query": null,
+    "seed": "UhWu9D",
+    "total": 269317
+  }
+}

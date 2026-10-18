@@ -1,6 +1,49 @@
-{"image": {"title": "File:Great Blue Heron.jpg",
-    "thumbnail": {"source": "https://thumb.wikimedia.org/x/960px-Heron.jpg?utm=1", "width": 640, "height": 407},
-    "image": {"source": "https://upload.wikimedia.org/wikipedia/commons/6/66/Great_Blue_Heron.jpg?utm_source=x", "width": 4790, "height": 3043},
-    "file_page": "https://commons.wikimedia.org/wiki/File:Great_Blue_Heron.jpg",
-    "artist": {"text": "Frank Schulenburg"}, "license": {"type": "CC BY-SA 3.0"},
-    "description": {"text": "Great Blue Heron hunting"}}}
+{
+  "image": {
+    "artist": {
+      "html": "<a href=\"//commons.wikimedia.org/wiki/User:Laitche\" title=\"User:Laitche\">Laitche</a>",
+      "name": "Laitche",
+      "text": "Laitche",
+      "user_page": "https://commons.wikimedia.org/wiki/User:Laitche"
+    },
+    "credit": {
+      "html": "<span class=\"int-own-work\" lang=\"en\">Own work</span>",
+      "text": "Own work"
+    },
+    "description": {
+      "html": "<a rel=\"mw:WikiLink/Interwiki\" href=\"https://en.wikipedia.org/wiki/en:Callicarpa%20dichotoma\" title=\"w:en:Callicarpa dichotoma\" class=\"extiw\">Purple beautyberry</a>, Daisen Park, <a rel=\"mw:WikiLink/Interwiki\" href=\"https://en.wikipedia.org/wiki/en:Sakai,%20Osaka\" title=\"w:en:Sakai, Osaka\" class=\"extiw\">Sakai, Osaka</a>. Focus stack of 4 photos.",
+      "lang": "en",
+      "text": "Purple beautyberry, Daisen Park, Sakai, Osaka. Focus stack of 4 photos."
+    },
+    "file_page": "https://commons.wikimedia.org/wiki/File:Purple_beautyberry,_October_2015_-_Stacking.jpg",
+    "image": {
+      "height": 3263,
+      "source": "https://upload.wikimedia.org/wikipedia/commons/1/1b/Purple_beautyberry%2C_October_2015_-_Stacking.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+      "width": 3935
+    },
+    "license": {
+      "code": "cc-by-sa-4.0",
+      "type": "CC BY-SA 4.0",
+      "url": "https://creativecommons.org/licenses/by-sa/4.0"
+    },
+    "structured": {
+      "captions": {
+        "en": "Clusters of bright purple berries on a Japanese beautyberry (Callicarpa japonica) branch",
+        "fr": "Callicarpe à fruits violets (Callicarpa dichotoma) ou \"Améthyste précoce\", Daisen Kofun, Sakai (Osaka), Japon",
+        "hi": "अमेरिकन ब्यूटीबेरी (Callicarpa americana) की शाखा पर चमकीले बैंगनी बेरियों के गुच्छे।",
+        "pa": "ਅਮੈਰਿਕਨ ਬਿਊਟੀਬੈਰੀ (Callicarpa americana) ਦੀ ਠਾਣੀ 'ਤੇ ਚਮਕਦਾਰ ਜਾਮਣੀ ਬੈਰੀਆਂ ਦੇ ਗੁੱਛੇ।",
+        "sa": "अमेरिकनसौन्दर्यबेरी (Callicarpa americana) शाखायां उज्ज्वलबैंगनीजामुनस्य समूहाः",
+        "tr": "Mor renkli yaban mersini, Daisen Parkı, Sakai, Osaka. 4 fotoğrafın odak yığını.",
+        "vi": "Những chùm quả mọng tím trên một cành Tử châu Nhật Bản (Callicarpa japonica), công viên Daisen, thành phố Sakai, tỉnh Osaka, Nhật Bản",
+        "zh-hant": "白棠子樹（Callicarpa dichotoma），日本大阪府堺市大仙公園，使用4張照片焦點合成"
+      }
+    },
+    "thumbnail": {
+      "height": 531,
+      "source": "https://thumb.wikimedia.org/wikipedia/commons/thumb/1/1b/Purple_beautyberry%2C_October_2015_-_Stacking.jpg/960px-Purple_beautyberry%2C_October_2015_-_Stacking.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=thumbnail",
+      "width": 640
+    },
+    "title": "File:Purple beautyberry, October 2015 - Stacking.jpg",
+    "wb_entity_id": "M44353508"
+  }
+}
