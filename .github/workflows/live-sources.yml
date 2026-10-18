@@ -1,0 +1,57 @@
+name: Live sources
+
+# Calls every photo source's real API once a night through the app's own
+# code (crates/core/src/probe.rs) and downloads one image from each. Never
+# runs on pull_request: the keys are repository secrets.
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: live-sources
+  cancel-in-progress: false
+
+jobs:
+  live:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the live check
+        run: cargo build --release -p rotator-core --bin live-sources
+      - name: Check every source
+        id: check
+        # Keyed sources without a secret are reported NOT VERIFIED, never
+        # passed. GitHub masks secret values in the log.
+        env:
+          UNSPLASH_ACCESS_KEY: ${{ secrets.UNSPLASH_ACCESS_KEY }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+        run: target/release/live-sources --issue "$RUNNER_TEMP/issue.md"
+      - name: Open or update the failure issue
+        if: failure() && steps.check.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Nightly live source check failed"
+          body="$RUNNER_TEMP/issue.md"
+          if [ ! -s "$body" ]; then
+            echo "The live check did not finish." > "$body"
+          fi
+          printf '\nRun: %s\n' "$RUN_URL" >> "$body"
+          number=$(gh issue list --state open --label bug --search "\"$title\" in:title" \
+            --json number,title --jq "map(select(.title == \"$title\")) | .[0].number // empty")
+          if [ -n "$number" ]; then
+            gh issue edit "$number" --body-file "$body"
+            gh issue comment "$number" --body "Failed again on $(date -u +%F): $RUN_URL"
+          else
+            gh issue create --title "$title" --label bug --body-file "$body"
+          fi
