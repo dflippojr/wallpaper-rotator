@@ -9,6 +9,7 @@ pub mod config;
 pub mod log;
 pub mod net;
 pub mod paths;
+pub mod probe;
 pub mod service;
 pub mod source;
 pub mod store;

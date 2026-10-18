@@ -6,7 +6,7 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
 use super::{Candidate, Image, SourceId};
-use crate::net::{encode, Http};
+use crate::net::{encode, parse, Call, Http};
 
 /// Appended to Unsplash links, as the API guidelines ask.
 pub const UTM: &str = "utm_source=wallpaper_rotator&utm_medium=referral";
@@ -82,15 +82,17 @@ fn auth(key: &str) -> String {
     format!("Client-ID {}", key.trim())
 }
 
-fn get_json<T: serde::de::DeserializeOwned>(http: &Http, key: &str, url: &str) -> Result<T> {
+fn call(key: &str, url: String) -> Call {
+    Call::new("Unsplash", url)
+        .header("Authorization", auth(key))
+        .header("Accept-Version", "v1")
+}
+
+fn send(http: &Http, call: &Call, key: &str) -> Result<String> {
     if key.trim().is_empty() {
         bail!("add your Unsplash access key in Settings");
     }
-    http.get_json(
-        "Unsplash",
-        url,
-        &[("Authorization", &auth(key)), ("Accept-Version", "v1")],
-    )
+    http.send(call)
 }
 
 /// What random photos come from. The API ignores collections and topics
@@ -140,6 +142,20 @@ pub fn batch(
     collections: &[String],
     username: &str,
 ) -> Result<Vec<Candidate>> {
+    let call = batch_call(http, key, query, topic_ids, collections, username);
+    let body = send(http, &call, key)
+        .map_err(|e| batch_error(e, selection(query, collections, username)))?;
+    parse_batch(&body)
+}
+
+pub fn batch_call(
+    http: &Http,
+    key: &str,
+    query: &str,
+    topic_ids: &[String],
+    collections: &[String],
+    username: &str,
+) -> Call {
     let url = batch_url(
         http.base("Unsplash"),
         query,
@@ -147,8 +163,11 @@ pub fn batch(
         collections,
         username,
     );
-    let photos: Vec<Photo> = get_json(http, key, &url)
-        .map_err(|e| batch_error(e, selection(query, collections, username)))?;
+    call(key, url)
+}
+
+pub fn parse_batch(body: &str) -> Result<Vec<Candidate>> {
+    let photos: Vec<Photo> = parse("Unsplash", body)?;
     Ok(photos.into_iter().map(candidate).collect())
 }
 
@@ -246,24 +265,34 @@ fn unsplash_path(value: &str) -> Option<&str> {
 
 /// Resolves a topic slug (or ID) to its ID.
 pub fn topic_id(http: &Http, key: &str, slug_or_id: &str) -> Result<String> {
+    send(http, &topic_call(http, key, slug_or_id), key)
+        .and_then(|body| parse_topic(&body))
+        .map_err(|e| e.context(format!("unknown Unsplash topic \"{slug_or_id}\"")))
+}
+
+pub fn topic_call(http: &Http, key: &str, slug_or_id: &str) -> Call {
     let url = format!(
         "{}/topics/{}",
         http.base("Unsplash"),
         encode(slug_or_id.trim())
     );
-    let topic: Topic = get_json(http, key, &url)
-        .map_err(|e| e.context(format!("unknown Unsplash topic \"{slug_or_id}\"")))?;
+    call(key, url)
+}
+
+pub fn parse_topic(body: &str) -> Result<String> {
+    let topic: Topic = parse("Unsplash", body)?;
     Ok(topic.id)
 }
 
 /// Tells Unsplash the photo was used, as the API terms require.
 pub fn track(http: &Http, key: &str, url: &str) -> Result<()> {
-    http.get(
-        "Unsplash",
-        url,
-        &[("Authorization", &auth(key)), ("Accept-Version", "v1")],
-    )?;
+    http.send(&track_call(key, url))?;
     Ok(())
+}
+
+/// The download report for a photo's `download_location`.
+pub fn track_call(key: &str, url: &str) -> Call {
+    call(key, url.to_string())
 }
 
 fn candidate(photo: Photo) -> Candidate {

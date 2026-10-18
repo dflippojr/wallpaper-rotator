@@ -6,7 +6,7 @@ use anyhow::{bail, Result};
 use serde::Deserialize;
 
 use super::{Candidate, Image, SourceId};
-use crate::net::{encode, Http};
+use crate::net::{encode, parse, Call, Http};
 
 pub const BATCH: u32 = 40;
 /// Pexels serves search results this deep at most.
@@ -38,13 +38,6 @@ struct Src {
     medium: String,
 }
 
-fn get(http: &Http, key: &str, url: &str) -> Result<Page> {
-    if key.trim().is_empty() {
-        bail!("add your Pexels API key in Settings");
-    }
-    http.get_json("Pexels", url, &[("Authorization", key.trim())])
-}
-
 /// A random page of landscape photos for `query`, or of curated photos.
 /// `pages` is the number of result pages the last search reported, so the
 /// pick can range over all of them; `None` asks for page 1 to learn it.
@@ -56,7 +49,15 @@ pub fn batch(
     pages: Option<u64>,
     random: u64,
 ) -> Result<(Vec<Candidate>, u64)> {
+    if key.trim().is_empty() {
+        bail!("add your Pexels API key in Settings");
+    }
     let page = pages.map_or(1, |n| 1 + random % n.clamp(1, MAX_PAGES));
+    parse_batch(&http.send(&batch_call(http, key, query, page))?)
+}
+
+/// Page `page` of search results for `query`, or of curated photos.
+pub fn batch_call(http: &Http, key: &str, query: &str, page: u64) -> Call {
     let query = query.trim();
     let api = http.base("Pexels");
     let url = if query.is_empty() {
@@ -67,7 +68,12 @@ pub fn batch(
             encode(query)
         )
     };
-    let result = get(http, key, &url)?;
+    Call::new("Pexels", url).header("Authorization", key.trim())
+}
+
+/// The landscape photos on a page, and how many pages there are.
+pub fn parse_batch(body: &str) -> Result<(Vec<Candidate>, u64)> {
+    let result: Page = parse("Pexels", body)?;
     let pages = result.total_results.div_ceil(u64::from(BATCH)).max(1);
     let photos: Vec<Candidate> = result
         .photos

@@ -117,41 +117,47 @@ pub fn fetch_image(
     let name = candidate.source.name();
     let original = dest.with_extension("orig.jpg");
     let result = (|| -> Result<()> {
-        match &candidate.image {
-            Image::Sized { url } => {
-                let url = url
-                    .replace("{w}", &width.to_string())
-                    .replace("{h}", &height.to_string());
+        match (&candidate.image, image_url(candidate, width, height)) {
+            (Image::File { path }, _) => crop(path, width, height, dest, false)?,
+            (Image::Sized { .. }, Some(url)) => {
                 http.download(name, &url, dest)?;
                 // A server that ignored the size gets cropped here.
                 if image::image_dimensions(dest).ok() != Some((width, height)) {
                     crop(dest, width, height, dest, false)?;
                 }
             }
-            Image::Full { url } => {
-                http.download(name, url, &original)?;
-                crop(&original, width, height, dest, candidate.width == 0)?;
-            }
-            Image::Thumb {
-                template,
-                original: full,
-            } => {
-                let step = THUMB_WIDTHS.iter().find(|&&w| w >= width);
-                let url = match step {
-                    Some(&w) if candidate.width == 0 || candidate.width > w => {
-                        template.replace("{w}", &w.to_string())
-                    }
-                    _ => full.clone(),
-                };
+            (image, Some(url)) => {
                 http.download(name, &url, &original)?;
-                crop(&original, width, height, dest, false)?;
+                let landscape_only = matches!(image, Image::Full { .. }) && candidate.width == 0;
+                crop(&original, width, height, dest, landscape_only)?;
             }
-            Image::File { path } => crop(path, width, height, dest, false)?,
+            (_, None) => bail!("{name} gave no image URL"),
         }
         Ok(())
     })();
     let _ = fs::remove_file(&original);
     result
+}
+
+/// The URL [`fetch_image`] downloads for a `width`x`height` wallpaper, or
+/// `None` for a local file.
+pub fn image_url(candidate: &Candidate, width: u32, height: u32) -> Option<String> {
+    Some(match &candidate.image {
+        Image::Sized { url } => url
+            .replace("{w}", &width.to_string())
+            .replace("{h}", &height.to_string()),
+        Image::Full { url } => url.clone(),
+        Image::Thumb { template, original } => {
+            let step = THUMB_WIDTHS.iter().find(|&&w| w >= width);
+            match step {
+                Some(&w) if candidate.width == 0 || candidate.width > w => {
+                    template.replace("{w}", &w.to_string())
+                }
+                _ => original.clone(),
+            }
+        }
+        Image::File { .. } => return None,
+    })
 }
 
 /// Scales `src` to cover `width`x`height`, crops the overflow from the

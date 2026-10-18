@@ -102,16 +102,48 @@ impl Http {
         request.call().map_err(|e| explain(name, e))
     }
 
-    pub fn get_json<T: DeserializeOwned>(
-        &self,
-        name: &'static str,
-        url: &str,
-        headers: &[(&str, &str)],
-    ) -> Result<T> {
-        self.get(name, url, headers)?
+    /// Sends `call` and returns the reply's text; an error status becomes
+    /// an error saying what it means for the app.
+    pub fn send(&self, call: &Call) -> Result<String> {
+        let headers: Vec<(&str, &str)> =
+            call.headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        self.get(call.api, &call.url, &headers)?
             .body_mut()
-            .read_json::<T>()
-            .map_err(|e| anyhow!("{name} sent a reply this app could not read: {e}"))
+            .read_to_string()
+            .map_err(|e| anyhow!("could not read {}'s reply: {e}", call.api))
+    }
+
+    /// Sends `call` and returns the status and the reply whatever the
+    /// status, for tools that report it themselves (the fixture recorder
+    /// and the live check).
+    pub fn send_raw(&self, call: &Call) -> Result<(u16, Vec<u8>)> {
+        let mut request = self
+            .agent
+            .get(&call.url)
+            .config()
+            .http_status_as_error(false)
+            .build();
+        for (key, value) in &call.headers {
+            request = request.header(*key, value);
+        }
+        let response = request
+            .call()
+            .map_err(|e| anyhow!("could not reach {}: {e}", call.api))?;
+        let status = response.status().as_u16();
+        let mut body = Vec::new();
+        response
+            .into_body()
+            .into_reader()
+            .take(MAX_IMAGE_BYTES + 1)
+            .read_to_end(&mut body)?;
+        if body.len() as u64 > MAX_IMAGE_BYTES {
+            bail!(
+                "{}'s reply is larger than {} MB",
+                call.api,
+                MAX_IMAGE_BYTES / 1024 / 1024
+            );
+        }
+        Ok((status, body))
     }
 
     /// Downloads to `dest` through a `.part` file, so a failed download
@@ -143,6 +175,38 @@ impl Http {
             }
         }
     }
+}
+
+/// One API request as a source builds it. The app, the fixture recorder
+/// and the live check all send these, so they ask exactly the same thing.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Call {
+    /// The source's name in [`BASES`]; labels errors.
+    pub api: &'static str,
+    pub url: String,
+    pub headers: Vec<(&'static str, String)>,
+}
+
+impl Call {
+    pub fn new(api: &'static str, url: String) -> Self {
+        Self {
+            api,
+            url,
+            headers: Vec::new(),
+        }
+    }
+
+    pub fn header(mut self, name: &'static str, value: impl Into<String>) -> Self {
+        self.headers.push((name, value.into()));
+        self
+    }
+}
+
+/// Reads a source's JSON reply. The error names the field that didn't
+/// match, so API drift is easy to spot.
+pub fn parse<T: DeserializeOwned>(api: &str, body: &str) -> Result<T> {
+    serde_json::from_str(body)
+        .map_err(|e| anyhow!("{api} sent a reply this app could not read: {e}"))
 }
 
 /// `photo.jpg` -> `photo.jpg.part`, which cleanup knows to delete.
