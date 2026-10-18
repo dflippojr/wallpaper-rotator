@@ -240,10 +240,24 @@ pub struct Service {
     /// Sources resting after an error, until this time.
     resting: HashMap<SourceId, u64>,
     rng: u64,
+    /// Whether `UNSPLASH_ACCESS_KEY` and `PEXELS_API_KEY` win over the
+    /// config's keys.
+    env_keys: bool,
 }
 
 impl Service {
     pub fn new(paths: Paths, hooks: Hooks) -> Result<Self> {
+        Self::build(paths, hooks, Http::default(), true)
+    }
+
+    /// A worker that sends its requests through `http` (tests point it at a
+    /// local stub) and takes keys only from the config file, never from the
+    /// environment.
+    pub fn with_http(paths: Paths, hooks: Hooks, http: Http) -> Result<Self> {
+        Self::build(paths, hooks, http, false)
+    }
+
+    fn build(paths: Paths, hooks: Hooks, http: Http, env_keys: bool) -> Result<Self> {
         let config = Config::load_or_create(&paths.config_file)?;
         let state = State::load(&paths.state_file);
         let seed = std::time::SystemTime::now()
@@ -255,7 +269,7 @@ impl Service {
             config,
             state,
             hooks,
-            http: Http::default(),
+            http,
             displays: Vec::new(),
             busy: false,
             error: None,
@@ -263,7 +277,13 @@ impl Service {
             last_failed_fetch: 0,
             resting: HashMap::new(),
             rng: seed | 1,
+            env_keys,
         })
+    }
+
+    /// The Unsplash and Pexels keys in use.
+    fn keys(&self) -> (String, String) {
+        keys(&self.config, self.env_keys)
     }
 
     /// Starts the worker thread and returns its command channel.
@@ -332,6 +352,7 @@ impl Service {
     pub fn snapshot(&self) -> Snapshot {
         let next_rotation_at = (!self.config.paused && self.config.interval_minutes > 0)
             .then(|| self.state.last_rotated + self.config.interval_minutes * 60);
+        let (unsplash_key, pexels_key) = self.keys();
         Snapshot {
             current: self
                 .state
@@ -344,8 +365,8 @@ impl Service {
             error: self.error.clone(),
             notice: self.notice.clone(),
             needs_setup: !self.can_fetch(),
-            has_unsplash_key: !self.config.effective_key().is_empty(),
-            has_pexels_key: !self.config.effective_pexels_key().is_empty(),
+            has_unsplash_key: !unsplash_key.is_empty(),
+            has_pexels_key: !pexels_key.is_empty(),
             settings: Settings::from_config(&self.config),
             photographer_note: unsplash::photographer_ignored(
                 &self.config.query,
@@ -386,9 +407,7 @@ impl Service {
                     self.last_failed_fetch = 0;
                     self.resting.clear();
                 }
-                if config.effective_key() != self.config.effective_key()
-                    || config.effective_pexels_key() != self.config.effective_pexels_key()
-                {
+                if keys(&config, self.env_keys) != self.keys() {
                     self.last_failed_fetch = 0;
                     self.resting.clear();
                 }
@@ -404,8 +423,8 @@ impl Service {
     /// Whether a source can be asked at all (it has the key it needs).
     fn usable(&self, source: SourceId) -> bool {
         match source {
-            SourceId::Unsplash => !self.config.effective_key().is_empty(),
-            SourceId::Pexels => !self.config.effective_pexels_key().is_empty(),
+            SourceId::Unsplash => !self.keys().0.is_empty(),
+            SourceId::Pexels => !self.keys().1.is_empty(),
             SourceId::Wallhaven | SourceId::Daily | SourceId::Favorites => true,
         }
     }
@@ -531,7 +550,7 @@ impl Service {
     /// Reports a photo that just went on screen (Unsplash's terms) and logs it.
     fn used(&self, photo: &Wallpaper) {
         if photo.source == SourceId::Unsplash && !photo.download_location.is_empty() {
-            let key = self.config.effective_key();
+            let (key, _) = self.keys();
             if let Err(e) = unsplash::track(&self.http, &key, &photo.download_location) {
                 self.log(&format!("download tracking failed: {e:#}"));
             }
@@ -925,7 +944,7 @@ impl Service {
         let query = self.config.query.clone();
         let batch: Vec<Candidate> = match source {
             SourceId::Unsplash => {
-                let key = self.config.effective_key();
+                let (key, _) = self.keys();
                 let topics = self.topic_ids(&key)?;
                 unsplash::batch(
                     &self.http,
@@ -937,7 +956,7 @@ impl Service {
                 )?
             }
             SourceId::Pexels => {
-                let key = self.config.effective_pexels_key();
+                let (_, key) = self.keys();
                 let random = self.random();
                 let (batch, pages) =
                     pexels::batch(&self.http, &key, &query, self.state.pexels_pages, random)?;
@@ -1098,6 +1117,18 @@ impl Service {
     }
 }
 
+/// The Unsplash and Pexels keys, from the environment first when `env`.
+fn keys(config: &Config, env: bool) -> (String, String) {
+    if env {
+        (config.effective_key(), config.effective_pexels_key())
+    } else {
+        (
+            config.access_key.trim().to_string(),
+            config.pexels_key.trim().to_string(),
+        )
+    }
+}
+
 /// "Unsplash is rate-limited, so this one is from Pexels."
 fn fallback_notice(notes: &[String], set: &Set) -> String {
     let mut from: Vec<&str> = set
@@ -1175,13 +1206,12 @@ fn safe_name(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    //! Pure logic with many branches. Whole journeys through `Command`s,
+    //! against a local stub of every photo API, are in `tests/worker.rs`.
     use super::*;
     use crate::source::tests::png;
     use crate::source::Image;
     use std::path::Path;
-    use std::sync::{Arc, Mutex};
-
-    type Applied = Arc<Mutex<Vec<Layout>>>;
 
     fn screen(id: &str, width: u32, height: u32) -> Display {
         Display {
@@ -1194,18 +1224,14 @@ mod tests {
         }
     }
 
-    fn service(root: &Path) -> (Service, Applied) {
-        let applied = Arc::new(Mutex::new(Vec::new()));
-        let seen = applied.clone();
+    /// A worker with no network: nothing here may reach a photo API.
+    fn service(root: &Path) -> Service {
         let hooks = Hooks {
-            apply: Box::new(move |layout| {
-                seen.lock().unwrap().push(layout.clone());
-                Ok(())
-            }),
+            apply: Box::new(|_| Ok(())),
             displays: Box::new(|| vec![screen("1", 100, 100)]),
             notify: Box::new(|_| {}),
         };
-        (Service::new(Paths::under(root), hooks).unwrap(), applied)
+        Service::with_http(Paths::under(root), hooks, Http::default()).unwrap()
     }
 
     fn photo(svc: &Service, id: &str, display: Option<Display>) -> Wallpaper {
@@ -1221,7 +1247,7 @@ mod tests {
             preview_url: String::new(),
             location: None,
             description: None,
-            download_location: "http://127.0.0.1:9/never".into(),
+            download_location: String::new(),
             color: None,
             source: SourceId::Unsplash,
             display,
@@ -1232,308 +1258,10 @@ mod tests {
         Set::single(photo(svc, id, None))
     }
 
-    fn favorites(svc: &Service, names: &[&str]) {
-        let dir = &svc.paths.default_favorites_dir;
-        fs::create_dir_all(dir).unwrap();
-        for name in names {
-            png(dir, name, 300, 200);
-        }
-    }
-
-    #[test]
-    fn no_usable_source_means_no_rotation() {
-        std::env::remove_var("UNSPLASH_ACCESS_KEY");
-        let dir = tempfile::tempdir().unwrap();
-        let (mut svc, applied) = service(dir.path());
-        assert!(!svc.rotation_due());
-        svc.handle(Command::Tick);
-        assert!(applied.lock().unwrap().is_empty());
-        assert!(svc.snapshot().needs_setup);
-        svc.handle(Command::Next(None));
-        assert!(svc.snapshot().error.unwrap().contains("photo source"));
-    }
-
-    #[test]
-    fn next_uses_the_prefetched_photo_and_deletes_the_old_one() {
-        let dir = tempfile::tempdir().unwrap();
-        let (mut svc, applied) = service(dir.path());
-        svc.config.access_key = "test-key".into();
-        // Keep the follow-up prefetch from reaching the network.
-        svc.last_failed_fetch = now();
-        let old = cached(&svc, "old");
-        let next = cached(&svc, "next");
-        svc.state.current = Some(old.clone());
-        svc.state.next = Some(next.clone());
-
-        svc.rotate().unwrap();
-
-        assert_eq!(*applied.lock().unwrap(), vec![next.layout()]);
-        assert_eq!(svc.state.current.as_ref().unwrap().photos[0].id, "next");
-        assert!(svc.state.next.is_none());
-        assert!(
-            !old.photos[0].file.exists(),
-            "old wallpaper should be deleted"
-        );
-        assert!(next.on_disk());
-        assert!(State::load(&svc.paths.state_file).current.is_some());
-    }
-
-    #[test]
-    fn rotates_through_favorites_without_the_network() {
-        let dir = tempfile::tempdir().unwrap();
-        let (mut svc, applied) = service(dir.path());
-        svc.config.sources = vec![SourceId::Favorites];
-        favorites(&svc, &["Ann - a1.png", "Bo - pexels-2.png", "Cy - a3.png"]);
-        let originals: Vec<Vec<u8>> = fs::read_dir(&svc.paths.default_favorites_dir)
-            .unwrap()
-            .map(|e| fs::read(e.unwrap().path()).unwrap())
-            .collect();
-
-        let mut seen = HashSet::new();
-        for _ in 0..3 {
-            svc.state.next = None;
-            svc.rotate().unwrap();
-            let current = &svc.state.current.as_ref().unwrap().photos[0];
-            assert_eq!(image::image_dimensions(&current.file).unwrap(), (100, 100));
-            seen.insert(current.id.clone());
-        }
-        // A shuffle bag: three rotations show all three favorites.
-        assert_eq!(seen.len(), 3);
-        assert_eq!(applied.lock().unwrap().len(), 3);
-        let view = &svc.snapshot().current[0];
-        assert_eq!(view.source, "Favorites");
-        assert!(view.preview_file.is_some());
-        // The originals are untouched.
-        let after: Vec<Vec<u8>> = fs::read_dir(&svc.paths.default_favorites_dir)
-            .unwrap()
-            .map(|e| fs::read(e.unwrap().path()).unwrap())
-            .collect();
-        assert_eq!(after, originals);
-        assert_eq!(svc.favorite(Some(0)).unwrap(), "Already in your favorites");
-    }
-
-    #[test]
-    fn a_failing_source_rests_and_favorites_fill_in() {
-        let dir = tempfile::tempdir().unwrap();
-        let (mut svc, _) = service(dir.path());
-        svc.config.access_key = "test-key".into();
-        svc.config.sources = vec![SourceId::Unsplash];
-        favorites(&svc, &["Ann - a1.png"]);
-        // Queued Unsplash photos whose downloads fail (nothing listens on
-        // port 9), so no search request is made.
-        let broken = |id: &str| {
-            let mut c = source::tests::candidate(
-                SourceId::Unsplash,
-                id,
-                Image::Sized {
-                    url: "http://127.0.0.1:9/{w}x{h}.jpg".into(),
-                },
-            );
-            c.width = 4000;
-            c.height = 3000;
-            c
-        };
-        svc.state.queue.insert(
-            SourceId::Unsplash,
-            vec![broken("u1"), broken("u2"), broken("u3")],
-        );
-
-        svc.rotate().unwrap();
-
-        let current = &svc.state.current.as_ref().unwrap().photos[0];
-        assert_eq!(current.source, SourceId::Favorites);
-        assert!(svc.resting.contains_key(&SourceId::Unsplash));
-        assert_eq!(
-            svc.notice.as_deref(),
-            Some("Unsplash failed, so this one is from Favorites")
-        );
-        // Resting sources are skipped until they've rested.
-        assert_eq!(svc.source_order(), vec![SourceId::Favorites]);
-    }
-
-    #[test]
-    fn rate_limits_rest_longer_than_other_errors() {
-        let dir = tempfile::tempdir().unwrap();
-        let (mut svc, _) = service(dir.path());
-        svc.rest(
-            SourceId::Pexels,
-            &anyhow::Error::from(net::RateLimited("Pexels")),
-        );
-        svc.rest(SourceId::Daily, &anyhow!("offline"));
-        assert!(svc.resting[&SourceId::Pexels] > svc.resting[&SourceId::Daily]);
-    }
-
-    #[test]
-    fn per_display_uses_a_prefetched_set_only_if_it_fits() {
-        let dir = tempfile::tempdir().unwrap();
-        let (mut svc, applied) = service(dir.path());
-        let screens = vec![screen("1", 3024, 1964), screen("2", 3840, 2160)];
-        let live = screens.clone();
-        svc.hooks.displays = Box::new(move || live.clone());
-        svc.config.access_key = "test-key".into();
-        svc.config.per_display = true;
-        svc.last_failed_fetch = now();
-        let set = Set {
-            photos: vec![
-                photo(&svc, "a", Some(screens[0].clone())),
-                photo(&svc, "b", Some(screens[1].clone())),
-            ],
-            spanned: None,
-        };
-        svc.state.next = Some(set.clone());
-        svc.rotate().unwrap();
-        assert_eq!(
-            *applied.lock().unwrap(),
-            vec![Layout::Each(vec![
-                ("1".into(), set.photos[0].file.clone()),
-                ("2".into(), set.photos[1].file.clone()),
-            ])]
-        );
-        assert_eq!(svc.snapshot().current.len(), 2);
-        assert_eq!(
-            svc.snapshot().current[1].display.as_deref(),
-            Some("Screen 2")
-        );
-        // A shared photo doesn't fit once per-display is on.
-        assert!(!cached(&svc, "shared").fits(&screens, svc.each(&screens)));
-    }
-
-    #[test]
-    fn next_on_one_display_keeps_the_others() {
-        let dir = tempfile::tempdir().unwrap();
-        let (mut svc, applied) = service(dir.path());
-        let screens = vec![screen("1", 120, 80), screen("2", 160, 90)];
-        let live = screens.clone();
-        svc.hooks.displays = Box::new(move || live.clone());
-        svc.config.per_display = true;
-        svc.config.sources = vec![SourceId::Favorites];
-        favorites(&svc, &["Ann - a1.png", "Bo - b2.png", "Cy - c3.png"]);
-        let left = photo(&svc, "left", Some(screens[0].clone()));
-        let right = photo(&svc, "right", Some(screens[1].clone()));
-        // Real images: GNOME (Linux) stitches every display's photo.
-        for w in [&left, &right] {
-            let (w_px, h_px) = w.display.as_ref().map(|d| (d.width, d.height)).unwrap();
-            source::write_jpeg(&image::RgbImage::new(w_px, h_px), &w.file).unwrap();
-        }
-        svc.state.current = Some(Set {
-            photos: vec![left.clone(), right.clone()],
-            spanned: None,
-        });
-        svc.state.last_rotated = 42;
-
-        svc.handle(Command::Next(Some(1)));
-
-        let current = svc.state.current.clone().unwrap();
-        assert_eq!(current.photos[0], left, "the other display keeps its photo");
-        assert_ne!(current.photos[1].id, "right");
-        assert_eq!(current.photos[1].display.as_ref().unwrap().id, "2");
-        assert_eq!(
-            image::image_dimensions(&current.photos[1].file).unwrap(),
-            (160, 90)
-        );
-        assert!(!right.file.exists(), "the replaced photo is deleted");
-        assert_eq!(svc.state.last_rotated, 42, "the schedule is unchanged");
-        assert_eq!(applied.lock().unwrap().len(), 1);
-
-        // The prefetched set is complete again after a one-display change
-        // used its photo.
-        svc.prefetch_if_needed();
-        let next = svc.state.next.clone().unwrap();
-        assert!(next.fits(&screens, true));
-        svc.handle(Command::Next(Some(0)));
-        let after = svc.state.current.clone().unwrap();
-        assert_eq!(after.photos[1], current.photos[1]);
-        assert_eq!(
-            after.photos[0].id, next.photos[0].id,
-            "used the prefetched photo"
-        );
-        svc.prefetch_if_needed();
-        assert!(svc.state.next.as_ref().unwrap().fits(&screens, true));
-    }
-
-    #[test]
-    fn next_on_one_display_falls_back_to_all_when_shared() {
-        let dir = tempfile::tempdir().unwrap();
-        let (mut svc, applied) = service(dir.path());
-        svc.config.sources = vec![SourceId::Favorites];
-        favorites(&svc, &["Ann - a1.png"]);
-        svc.state.current = Some(cached(&svc, "shared"));
-        svc.handle(Command::Next(Some(0)));
-        assert!(svc.snapshot().error.is_none());
-        assert_eq!(applied.lock().unwrap().len(), 1);
-        assert_ne!(svc.state.current.as_ref().unwrap().photos[0].id, "shared");
-    }
-
-    #[test]
-    fn display_changes_re_place_the_current_photos() {
-        let dir = tempfile::tempdir().unwrap();
-        let (mut svc, applied) = service(dir.path());
-        let screens = Arc::new(Mutex::new(vec![screen("1", 100, 100)]));
-        let live = screens.clone();
-        svc.hooks.displays = Box::new(move || live.lock().unwrap().clone());
-        svc.state.current = Some(cached(&svc, "cur"));
-
-        svc.check_displays();
-        assert!(
-            applied.lock().unwrap().is_empty(),
-            "first look only records"
-        );
-        svc.check_displays();
-        assert!(applied.lock().unwrap().is_empty(), "nothing changed");
-
-        screens.lock().unwrap().push(screen("2", 200, 100));
-        svc.check_displays();
-        assert_eq!(applied.lock().unwrap().len(), 1);
-
-        // An empty answer means "unknown", not "every display unplugged".
-        screens.lock().unwrap().clear();
-        svc.check_displays();
-        assert_eq!(applied.lock().unwrap().len(), 1);
-    }
-
-    #[test]
-    fn failed_apply_keeps_the_photo_for_later() {
-        let dir = tempfile::tempdir().unwrap();
-        let (mut svc, _) = service(dir.path());
-        svc.hooks.apply = Box::new(|_| anyhow::bail!("no display"));
-        svc.config.access_key = "test-key".into();
-        let next = cached(&svc, "next");
-        svc.state.next = Some(next.clone());
-        assert!(svc.rotate().is_err());
-        assert_eq!(svc.state.next, Some(next));
-    }
-
-    #[test]
-    fn favorites_copy_outside_the_cache_named_by_source() {
-        let dir = tempfile::tempdir().unwrap();
-        let (mut svc, _) = service(dir.path());
-        let mut pexels = photo(&svc, "417074", None);
-        pexels.source = SourceId::Pexels;
-        svc.state.current = Some(Set {
-            photos: vec![photo(&svc, "cur", None), pexels],
-            spanned: None,
-        });
-        svc.handle(Command::Favorite(Some(0)));
-        let saved = dir.path().join("favorites").join("Ann _ Lee - cur.jpg");
-        assert!(saved.exists());
-        assert!(svc.snapshot().notice.unwrap().starts_with("Saved to"));
-        svc.handle(Command::Favorite(None));
-        assert!(svc.snapshot().notice.unwrap().starts_with("Saved 2 photos"));
-        assert!(dir
-            .path()
-            .join("favorites/Ann _ Lee - pexels-417074.jpg")
-            .exists());
-        // Cleanup never touches favorites.
-        svc.cleanup();
-        assert!(saved.exists());
-        svc.handle(Command::Favorite(Some(5)));
-        assert!(svc.snapshot().error.is_some());
-    }
-
     #[test]
     fn interval_and_pause_control_rotation() {
         let dir = tempfile::tempdir().unwrap();
-        let (mut svc, _) = service(dir.path());
+        let mut svc = service(dir.path());
         svc.config.access_key = "k".into();
         svc.state.current = Some(cached(&svc, "cur"));
         svc.state.last_rotated = now();
@@ -1549,60 +1277,6 @@ mod tests {
         svc.config.paused = true;
         fs::remove_file(&svc.state.current.as_ref().unwrap().photos[0].file).unwrap();
         assert!(svc.rotation_due());
-    }
-
-    #[test]
-    fn changing_the_sources_drops_prefetched_and_queued_photos() {
-        let dir = tempfile::tempdir().unwrap();
-        let (mut svc, _) = service(dir.path());
-        for change in [
-            |c: &mut Config| c.query = "mountains".into(),
-            |c: &mut Config| c.collections.push("123".into()),
-            |c: &mut Config| c.collections.clear(),
-            |c: &mut Config| c.username = "ann".into(),
-            |c: &mut Config| c.per_display = !c.per_display,
-            |c: &mut Config| c.sources.push(SourceId::Wallhaven),
-        ] {
-            let next = cached(&svc, "next");
-            svc.state.next = Some(next.clone());
-            svc.state.queue.insert(SourceId::Unsplash, Vec::new());
-            let mut config = svc.config.clone();
-            change(&mut config);
-            config.save(&svc.paths.config_file).unwrap();
-            svc.reload();
-            assert!(svc.state.next.is_none());
-            assert!(svc.state.queue.is_empty());
-            assert!(!next.on_disk());
-        }
-    }
-
-    #[test]
-    fn collections_and_photographer_skip_topic_resolution_until_cleared() {
-        let dir = tempfile::tempdir().unwrap();
-        let (mut svc, _) = service(dir.path());
-        svc.config.collections = vec!["123".into()];
-        svc.config.username = "ann".into();
-        assert!(svc.topic_ids("").unwrap().is_empty());
-        svc.config.collections.clear();
-        assert!(svc.topic_ids("").unwrap().is_empty());
-        svc.state
-            .topic_ids
-            .insert("wallpapers".into(), "topic-id".into());
-        svc.config.username.clear();
-        assert_eq!(svc.topic_ids("").unwrap(), ["topic-id"]);
-    }
-
-    #[test]
-    fn snapshot_says_when_collections_override_the_photographer() {
-        let dir = tempfile::tempdir().unwrap();
-        let (mut svc, _) = service(dir.path());
-        svc.config.username = "ann".into();
-        assert_eq!(svc.snapshot().photographer_note, None);
-        svc.config.collections = vec!["123".into()];
-        assert_eq!(
-            svc.snapshot().photographer_note.as_deref(),
-            Some("Photographer is ignored while Collections is set.")
-        );
     }
 
     #[test]
@@ -1624,7 +1298,7 @@ mod tests {
     fn small_unsplash_pool_prefers_photos_outside_the_current_set() {
         for each in [false, true] {
             let dir = tempfile::tempdir().unwrap();
-            let (mut svc, _) = service(dir.path());
+            let mut svc = service(dir.path());
             let screens = [screen("1", 100, 100), screen("2", 100, 100)];
             let current = photo(&svc, "current", each.then(|| screens[0].clone()));
             svc.state.current = Some(Set::single(current));
@@ -1702,7 +1376,7 @@ mod tests {
     #[test]
     fn notices_name_the_fallback() {
         let dir = tempfile::tempdir().unwrap();
-        let (svc, _) = service(dir.path());
+        let svc = service(dir.path());
         let mut bing = photo(&svc, "bing-20261014-x", None);
         bing.source = SourceId::Daily;
         let set = Set::single(bing);

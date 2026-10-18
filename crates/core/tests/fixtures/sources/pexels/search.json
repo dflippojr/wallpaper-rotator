@@ -1,0 +1,12 @@
+{"page": 1, "per_page": 40, "total_results": 81, "photos": [
+    {"id": 417074, "width": 5184, "height": 3456, "url": "https://www.pexels.com/photo/lake-417074/",
+     "photographer": "Pixabay", "photographer_url": "https://www.pexels.com/@pixabay",
+     "photographer_id": 2659, "avg_color": "#6C7C88", "liked": false, "alt": "Lake and mountains",
+     "src": {"original": "https://images.pexels.com/photos/417074/pexels-photo-417074.jpeg",
+             "large2x": "x", "large": "x", "medium": "https://images.pexels.com/photos/417074/m.jpeg",
+             "small": "x", "portrait": "x", "landscape": "x", "tiny": "x"}},
+    {"id": 2, "width": 3000, "height": 4500, "url": "https://www.pexels.com/photo/tower-2/",
+     "photographer": "P", "photographer_url": "https://www.pexels.com/@p",
+     "avg_color": null, "alt": "", "src": {"original": "https://images.pexels.com/photos/2/pexels-photo-2.jpeg",
+     "medium": "https://images.pexels.com/photos/2/m.jpeg"}}
+]}
