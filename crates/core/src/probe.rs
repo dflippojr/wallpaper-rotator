@@ -6,11 +6,11 @@
 use std::fs;
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use serde_json::Value;
 
 use crate::config::Config;
-use crate::net::{encode, Call, Http};
+use crate::net::{encode, redact, Call, Http, REDACTED};
 use crate::source::{daily, image_url, pexels, unsplash, wallhaven, Candidate};
 
 /// The sources the live check calls, by their API names.
@@ -56,21 +56,45 @@ impl Keys {
     }
 
     fn all(&self) -> impl Iterator<Item = &str> {
-        [self.unsplash.as_str(), self.pexels.as_str()]
+        [self.unsplash.trim(), self.pexels.trim()]
             .into_iter()
             .filter(|k| !k.is_empty())
     }
+
+    /// `text` with every key, in each form [`contains_key`] finds, and any
+    /// other credential [`redact`] finds replaced by [`REDACTED`]. Every
+    /// error and report the recorder and the live check print goes
+    /// through here.
+    pub fn scrub(&self, text: &str) -> String {
+        let mut text = text.to_string();
+        for key in self.all() {
+            for form in key_forms(key) {
+                text = text.replace(&form, REDACTED);
+            }
+        }
+        redact(&text)
+    }
+
+    fn scrub_error(&self, error: anyhow::Error) -> anyhow::Error {
+        anyhow!(self.scrub(&format!("{error:#}")))
+    }
+}
+
+/// A key as is, percent-encoded and JSON-escaped.
+fn key_forms(key: &str) -> [String; 3] {
+    let json = serde_json::to_string(key).unwrap_or_default();
+    [
+        key.to_string(),
+        encode(key),
+        json.trim_matches('"').to_string(),
+    ]
 }
 
 /// True when `text` holds any of the keys, as is, percent-encoded or
 /// JSON-escaped.
 pub fn contains_key(text: &str, keys: &Keys) -> bool {
-    keys.all().any(|key| {
-        let json = serde_json::to_string(key).unwrap_or_default();
-        [key, encode(key).as_str(), json.trim_matches('"')]
-            .iter()
-            .any(|form| text.contains(form))
-    })
+    keys.all()
+        .any(|key| key_forms(key).iter().any(|form| text.contains(form)))
 }
 
 // ---- Recorder ----
@@ -171,8 +195,50 @@ fn wikimedia_calls(http: &Http, today: u64) -> Vec<Call> {
         .collect()
 }
 
+/// Records every fixture the keys allow whose source is in `only` (all
+/// when empty) under `dir`, and the Unsplash download report after its
+/// random list. `say` gets one line per fixture written or source
+/// skipped. Errors and lines never hold a key.
+pub fn record_sources(
+    http: &Http,
+    keys: &Keys,
+    dir: &Path,
+    only: &[String],
+    today: u64,
+    say: &mut dyn FnMut(&str),
+) -> Result<()> {
+    let wanted = |path: &str| {
+        only.is_empty()
+            || only.iter().any(|s| {
+                path.starts_with(&format!("{s}/")) || path.ends_with(&format!("/{s}.json"))
+            })
+    };
+    let mut say = |line: String| say(&keys.scrub(&line));
+    let (fixtures, skipped) = fixtures(http, keys, today);
+    for source in skipped {
+        if wanted(&format!("{}/", source.to_lowercase())) {
+            say(format!("skipped {source}: no key"));
+        }
+    }
+    for fixture in fixtures.iter().filter(|f| wanted(f.path)) {
+        let photos = record(http, fixture, keys, dir)?;
+        say(format!("wrote {} ({photos})", fixture.path));
+        if fixture.path == "unsplash/random.json" {
+            let random = fs::read_to_string(dir.join(fixture.path))?;
+            let download = unsplash_download(keys, &random)?;
+            record(http, &download, keys, dir)?;
+            say(format!("wrote {}", download.path));
+        }
+    }
+    Ok(())
+}
+
 /// The download report for the first photo in a recorded Unsplash list.
 pub fn unsplash_download(keys: &Keys, random: &str) -> Result<Fixture> {
+    download_fixture(keys, random).map_err(|e| keys.scrub_error(e))
+}
+
+fn download_fixture(keys: &Keys, random: &str) -> Result<Fixture> {
     let photo = unsplash::parse_batch(random)?
         .into_iter()
         .next()
@@ -196,22 +262,38 @@ pub fn unsplash_download(keys: &Keys, random: &str) -> Result<Fixture> {
 
 /// Records `fixture` under `dir`: the real reply, trimmed to a few photos
 /// and without account fields, checked with the app's parser. Refuses to
-/// write anything that holds one of `keys`. Returns how many photos it has.
+/// write anything that holds one of `keys`, and checks for them before
+/// parsing, since a parser error can quote the reply. Returns how many
+/// photos it has. The error never holds a key.
 pub fn record(http: &Http, fixture: &Fixture, keys: &Keys, dir: &Path) -> Result<usize> {
+    record_reply(http, fixture, keys, dir).map_err(|e| keys.scrub_error(e))
+}
+
+fn record_reply(http: &Http, fixture: &Fixture, keys: &Keys, dir: &Path) -> Result<usize> {
+    let refuse = || {
+        anyhow!(
+            "refusing to record {}: it contains an API key",
+            fixture.path
+        )
+    };
     for call in &fixture.calls {
         let (status, body) = http.send_raw(call)?;
         if status != 200 {
             bail!("{} returned HTTP {status} for {}", call.api, fixture.path);
         }
         let body = String::from_utf8(body).context("the reply is not text")?;
+        if contains_key(&body, keys) {
+            return Err(refuse());
+        }
         let text = trim(&body, fixture.keep)?;
+        // Re-encoding can turn an escaped key into a plain one.
+        if contains_key(&text, keys) {
+            return Err(refuse());
+        }
         let count = (fixture.check)(&text)
             .with_context(|| format!("{} no longer parses once trimmed", fixture.path))?;
         if count == 0 {
             continue;
-        }
-        if contains_key(&text, keys) {
-            bail!("refusing to write {}: it contains an API key", fixture.path);
         }
         let path = dir.join(fixture.path);
         if let Some(parent) = path.parent() {
@@ -302,9 +384,33 @@ pub struct Check {
     pub outcome: Outcome,
 }
 
+impl Outcome {
+    /// The outcome with `keys` scrubbed from every text taken from a reply
+    /// or an error, so reports and issues built from it hold no key.
+    fn scrubbed(self, keys: &Keys) -> Self {
+        match self {
+            Outcome::Passed {
+                photo,
+                author,
+                size,
+            } => Outcome::Passed {
+                photo: keys.scrub(&photo),
+                author: keys.scrub(&author),
+                size,
+            },
+            Outcome::Failed(f) => Outcome::Failed(Failure {
+                detail: keys.scrub(&f.detail),
+                ..f
+            }),
+            other => other,
+        }
+    }
+}
+
 /// Calls every source once, as the app does, and checks a photo from each
 /// downloads at `width`x`height`. Keyed sources without a key are not
-/// called. `today` is Unix seconds, for the picture of the day.
+/// called. `today` is Unix seconds, for the picture of the day. No key
+/// appears in the results.
 pub fn live(http: &Http, keys: &Keys, (width, height): (u32, u32), today: u64) -> Vec<Check> {
     SOURCES
         .iter()
@@ -316,7 +422,10 @@ pub fn live(http: &Http, keys: &Keys, (width, height): (u32, u32), today: u64) -
                     Err(failure) => Outcome::Failed(failure),
                 },
             };
-            Check { source, outcome }
+            Check {
+                source,
+                outcome: outcome.scrubbed(keys),
+            }
         })
         .collect()
 }
@@ -374,9 +483,7 @@ fn check(
     let img = image::load_from_memory(&bytes)
         .map_err(|e| Failure::new("image", Some(200), format!("{url} did not decode: {e}")))?;
     let size = (img.width(), img.height());
-    // Wikimedia thumbnails are picked by width alone.
-    let tall_enough = matches!(photo.image, crate::source::Image::Thumb { .. }) || size.1 >= height;
-    if size.0 < width || !tall_enough {
+    if size.0 < width || size.1 < height {
         return Err(Failure::new(
             "image size",
             Some(200),

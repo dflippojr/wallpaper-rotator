@@ -18,6 +18,24 @@ fn keys() -> Keys {
     }
 }
 
+/// Fake keys for the leak tests. No real key is ever used in a test.
+const FAKE_UNSPLASH: &str = "FAKE-unsplash-key-0000";
+const FAKE_PEXELS: &str = "FAKE-pexels-key-1111";
+
+fn fake_keys() -> Keys {
+    Keys {
+        unsplash: FAKE_UNSPLASH.into(),
+        pexels: FAKE_PEXELS.into(),
+    }
+}
+
+/// Fails if `text` holds a fake key, or a credential parameter's value.
+fn assert_no_key(text: &str) {
+    for key in [FAKE_UNSPLASH, FAKE_PEXELS, "not-a-configured-key"] {
+        assert!(!text.contains(key), "a key leaked into: {text}");
+    }
+}
+
 fn outcome<'a>(checks: &'a [Check], source: &str) -> &'a Outcome {
     &checks.iter().find(|c| c.source == source).unwrap().outcome
 }
@@ -108,6 +126,105 @@ fn refuses_to_write_a_fixture_that_holds_a_key() {
 
     assert!(error.to_string().contains("contains an API key"), "{error}");
     assert!(walk(dir.path()).is_empty());
+}
+
+#[test]
+fn recorder_errors_never_show_a_key() {
+    let api = StubApi::start();
+    let http = api.http();
+    let dir = tempfile::tempdir().unwrap();
+    let keys = fake_keys();
+    // Replies the parsers reject while quoting the bad value back, which
+    // here is a key; and one that isn't JSON at all.
+    let replies = [
+        (
+            Route::UnsplashRandom,
+            "unsplash/random.json",
+            format!(r#"[{{"width": "{FAKE_UNSPLASH}"}}]"#),
+        ),
+        (
+            Route::PexelsCurated,
+            "pexels/curated.json",
+            format!(r#"{{"photos": [{{"width": "{FAKE_PEXELS}"}}]}}"#),
+        ),
+        (
+            Route::WallhavenSearch,
+            "wallhaven/search.json",
+            format!(r#"{{"data": "{FAKE_UNSPLASH}"}}"#),
+        ),
+        (
+            Route::Bing,
+            "daily/bing.json",
+            format!("{FAKE_PEXELS} is not JSON"),
+        ),
+    ];
+    let (fixtures, _) = probe::fixtures(&http, &keys, 0);
+    for (route, path, body) in replies {
+        api.reply(route, &body);
+        let fixture = fixtures.iter().find(|f| f.path == path).unwrap();
+
+        let error = probe::record(&http, fixture, &keys, dir.path()).unwrap_err();
+
+        assert_no_key(&format!("{error:#}"));
+        assert_no_key(&format!("{error:?}"));
+        assert!(
+            error.to_string().contains("contains an API key"),
+            "{error:#}"
+        );
+    }
+    assert!(walk(dir.path()).is_empty());
+}
+
+#[test]
+fn the_recorder_says_what_it_wrote_and_never_shows_a_key() {
+    let api = StubApi::start();
+    let http = api.http();
+    let dir = tempfile::tempdir().unwrap();
+    let keys = fake_keys();
+    let only = ["unsplash".to_string(), "bing".to_string()];
+    let mut lines = Vec::new();
+
+    probe::record_sources(&http, &keys, dir.path(), &only, 0, &mut |l| {
+        lines.push(l.to_string())
+    })
+    .unwrap();
+
+    assert_eq!(
+        lines,
+        [
+            "wrote unsplash/random.json (4)",
+            "wrote unsplash/download.json",
+            "wrote unsplash/search.json (4)",
+            "wrote unsplash/topic.json (1)",
+            "wrote daily/bing.json (4)",
+        ]
+    );
+    let mut lines = Vec::new();
+    probe::record_sources(&http, &Keys::default(), dir.path(), &[], 0, &mut |l| {
+        lines.push(l.to_string())
+    })
+    .unwrap();
+    assert_eq!(
+        lines[..2],
+        ["skipped Unsplash: no key", "skipped Pexels: no key"]
+    );
+
+    // The whole run's output when a reply quotes a key back.
+    api.reply(
+        Route::UnsplashRandom,
+        &format!(r#"[{{"width": "{FAKE_UNSPLASH}"}}]"#),
+    );
+    let mut lines = Vec::new();
+    let error = probe::record_sources(&http, &keys, dir.path(), &only, 0, &mut |l| {
+        lines.push(l.to_string())
+    })
+    .unwrap_err();
+    assert!(lines.is_empty(), "{lines:?}");
+    assert_no_key(&format!("{error:?}"));
+    assert!(
+        error.to_string().contains("contains an API key"),
+        "{error:#}"
+    );
 }
 
 #[test]
@@ -231,6 +348,59 @@ fn live_check_fails_images_that_are_missing_or_too_small() {
     let bing = failure(&checks, "Bing");
     assert_eq!(bing.field, "image");
     assert!(bing.detail.contains("did not decode"), "{bing:?}");
+}
+
+#[test]
+fn live_check_fails_wikimedia_images_too_short() {
+    let api = StubApi::start();
+
+    // Wikimedia thumbnails come at the stub's 400x300: wide enough, too short.
+    let checks = probe::live(&api.http(), &Keys::default(), (320, 400), 0);
+
+    let wikimedia = failure(&checks, "Wikimedia");
+    assert_eq!(wikimedia.field, "image size");
+    assert!(wikimedia.detail.contains("400x300"), "{wikimedia:?}");
+}
+
+#[test]
+fn live_check_reports_never_show_a_key() {
+    let api = StubApi::start();
+    let keys = fake_keys();
+    // Parser errors that quote a key, and a credit that holds one.
+    api.reply(
+        Route::UnsplashRandom,
+        &format!(r#"[{{"width": "{FAKE_UNSPLASH}"}}]"#),
+    );
+    api.reply(
+        Route::WallhavenSearch,
+        &format!(r#"{{"data": "{FAKE_PEXELS}"}}"#),
+    );
+    api.reply(
+        Route::Bing,
+        &format!(
+            r#"{{"images": [{{"startdate": "20261018", "urlbase": "/th?id=OHR.X_EN-US1&client_id=not-a-configured-key", "copyright": "X (© {FAKE_UNSPLASH})"}}]}}"#
+        ),
+    );
+
+    let checks = probe::live(&api.http(), &keys, (320, 200), 0);
+
+    assert_eq!(failure(&checks, "Unsplash").field, "reply");
+    assert_eq!(failure(&checks, "Wallhaven").field, "reply");
+    assert!(matches!(outcome(&checks, "Bing"), Outcome::Passed { .. }));
+    let issue = probe::issue_body(&checks).unwrap();
+    for text in [probe::summary(&checks), issue, format!("{checks:?}")] {
+        assert_no_key(&text);
+    }
+
+    // A failure that quotes the image URL, with a credential parameter in it.
+    api.reply(Route::Image, "not an image");
+    let checks = probe::live(&api.http(), &keys, (320, 200), 0);
+    let bing = failure(&checks, "Bing");
+    assert!(bing.detail.contains("client_id=[redacted]"), "{bing:?}");
+    let issue = probe::issue_body(&checks).unwrap();
+    for text in [probe::summary(&checks), issue, format!("{checks:?}")] {
+        assert_no_key(&text);
+    }
 }
 
 #[test]

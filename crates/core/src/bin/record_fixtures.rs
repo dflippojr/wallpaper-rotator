@@ -34,31 +34,15 @@ fn main() -> Result<()> {
             ),
         }
     }
-    let wanted = |path: &str| {
-        only.is_empty()
-            || only.iter().any(|s| {
-                path.starts_with(&format!("{s}/")) || path.ends_with(&format!("/{s}.json"))
-            })
-    };
 
     let config = Paths::discover().ok().map(|p| p.config_file);
     let keys = Keys::load(config.as_deref());
-    let http = Http::default();
-    let (fixtures, skipped) = probe::fixtures(&http, &keys, rotator_core::now());
-    for source in skipped {
-        if wanted(&format!("{}/", source.to_lowercase())) {
-            println!("skipped {source}: no key");
-        }
-    }
-    for fixture in fixtures.iter().filter(|f| wanted(f.path)) {
-        let photos = probe::record(&http, fixture, &keys, &out)?;
-        println!("wrote {} ({photos})", fixture.path);
-        if fixture.path == "unsplash/random.json" {
-            let random = std::fs::read_to_string(out.join(fixture.path))?;
-            let download = probe::unsplash_download(&keys, &random)?;
-            probe::record(&http, &download, &keys, &out)?;
-            println!("wrote {}", download.path);
-        }
-    }
-    Ok(())
+    probe::record_sources(
+        &Http::default(),
+        &keys,
+        &out,
+        &only,
+        rotator_core::now(),
+        &mut |line| println!("{line}"),
+    )
 }

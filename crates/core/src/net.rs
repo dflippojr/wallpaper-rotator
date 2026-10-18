@@ -110,7 +110,13 @@ impl Http {
         self.get(call.api, &call.url, &headers)?
             .body_mut()
             .read_to_string()
-            .map_err(|e| anyhow!("could not read {}'s reply: {e}", call.api))
+            .map_err(|e| {
+                anyhow!(
+                    "could not read {}'s reply: {}",
+                    call.api,
+                    redact(&e.to_string())
+                )
+            })
     }
 
     /// Sends `call` and returns the status and the reply whatever the
@@ -128,7 +134,7 @@ impl Http {
         }
         let response = request
             .call()
-            .map_err(|e| anyhow!("could not reach {}: {e}", call.api))?;
+            .map_err(|e| anyhow!("could not reach {}: {}", call.api, redact(&e.to_string())))?;
         let status = response.status().as_u16();
         let mut body = Vec::new();
         response
@@ -203,10 +209,15 @@ impl Call {
 }
 
 /// Reads a source's JSON reply. The error names the field that didn't
-/// match, so API drift is easy to spot.
+/// match, so API drift is easy to spot. It can quote the reply, so it is
+/// [`redact`]ed.
 pub fn parse<T: DeserializeOwned>(api: &str, body: &str) -> Result<T> {
-    serde_json::from_str(body)
-        .map_err(|e| anyhow!("{api} sent a reply this app could not read: {e}"))
+    serde_json::from_str(body).map_err(|e| {
+        anyhow!(
+            "{api} sent a reply this app could not read: {}",
+            redact(&e.to_string())
+        )
+    })
 }
 
 /// `photo.jpg` -> `photo.jpg.part`, which cleanup knows to delete.
@@ -225,8 +236,70 @@ pub(crate) fn explain(name: &'static str, err: ureq::Error) -> anyhow::Error {
         ureq::Error::StatusCode(404) => anyhow::Error::new(ureq::Error::StatusCode(404))
             .context(format!("{name} found nothing for that search")),
         ureq::Error::StatusCode(code) => anyhow!("{name} returned HTTP {code}"),
-        other => anyhow!("could not reach {name}: {other}"),
+        other => anyhow!("could not reach {name}: {}", redact(&other.to_string())),
     }
+}
+
+/// What a credential is replaced with in errors and reports.
+pub const REDACTED: &str = "[redacted]";
+/// Query parameters whose values are credentials.
+const SECRET_PARAMS: [&str; 5] = [
+    "client_id=",
+    "access_key=",
+    "api_key=",
+    "apikey=",
+    "access_token=",
+];
+/// Where a query parameter's or a token's value ends.
+const VALUE_ENDS: &[u8] = b"&#\"'<>()[]{},; \t\r\n\\";
+
+/// `text` with every credential in it replaced by [`REDACTED`]: the values
+/// of credential query parameters (`client_id=`, `api_key=`, ...), of
+/// `Authorization` headers and of `Client-ID` tokens. Errors quote URLs
+/// and replies, so every error this module builds goes through here.
+pub fn redact(text: &str) -> String {
+    // ASCII lowercasing keeps byte offsets, so matches index `text` too.
+    let lower = text.to_ascii_lowercase();
+    let mut secrets = Vec::new();
+    let mut values_after = |marker: &str, separators: &[u8], ends: &[u8]| {
+        for (at, _) in lower.match_indices(marker) {
+            let after = at + marker.len();
+            let start = after
+                + text.as_bytes()[after..]
+                    .iter()
+                    .take_while(|b| separators.contains(b))
+                    .count();
+            if !separators.is_empty() && start == after {
+                continue; // "Authorizations", not a header
+            }
+            let end = text.as_bytes()[start..]
+                .iter()
+                .position(|b| ends.contains(b))
+                .map_or(text.len(), |n| start + n);
+            if end > start {
+                secrets.push((start, end));
+            }
+        }
+    };
+    for param in SECRET_PARAMS {
+        values_after(param, b"", VALUE_ENDS);
+    }
+    values_after("client-id ", b"", VALUE_ENDS);
+    // A header's value runs to its closing quote or the end of the line.
+    values_after("authorization", b"\"':=, \t\\", b"\"'\r\n&<>,;\\");
+
+    secrets.sort_unstable();
+    let mut out = String::with_capacity(text.len());
+    let mut done = 0;
+    for (start, end) in secrets {
+        if start >= done {
+            out.push_str(&text[done..start]);
+            out.push_str(REDACTED);
+        }
+        done = done.max(end);
+    }
+    out.push_str(&text[done..]);
+    out
 }
 
 /// Percent-encodes a URL query component.
@@ -268,6 +341,49 @@ mod tests {
         assert_eq!(stub.base("Pexels"), "http://127.0.0.1:1");
         assert_eq!(stub.base("Unsplash"), "https://api.unsplash.com");
         assert_eq!(Http::default().base("Pexels"), "https://api.pexels.com");
+    }
+
+    #[test]
+    fn redacts_credentials() {
+        let cases = [
+            (
+                "GET https://x/p?client_id=s3cret&page=2 failed",
+                "GET https://x/p?client_id=[redacted]&page=2 failed",
+            ),
+            ("?API_KEY=s3cret", "?API_KEY=[redacted]"),
+            (
+                "apikey=s3cret access_key=s3cret",
+                "apikey=[redacted] access_key=[redacted]",
+            ),
+            (
+                "Authorization: Client-ID s3cret\nnext",
+                "Authorization: [redacted]\nnext",
+            ),
+            (
+                r#"{"Authorization":"s3cret"}"#,
+                r#"{"Authorization":"[redacted]"}"#,
+            ),
+            (
+                r#"("Authorization", "s3cret")"#,
+                r#"("Authorization", "[redacted]")"#,
+            ),
+            (
+                "token Client-ID s3cret, then",
+                "token Client-ID [redacted], then",
+            ),
+            ("no Authorizations here", "no Authorizations here"),
+            ("missing field `urlbase`", "missing field `urlbase`"),
+        ];
+        for (text, redacted) in cases {
+            assert_eq!(redact(text), redacted);
+            assert_eq!(
+                redact(redacted),
+                redacted,
+                "redacting twice changes nothing"
+            );
+        }
+        let error = parse::<Vec<u32>>("Unsplash", r#"["?client_id=s3cret"]"#).unwrap_err();
+        assert!(!error.to_string().contains("s3cret"), "{error}");
     }
 
     #[test]
