@@ -181,6 +181,19 @@ For an installable bundle (`.app`/`.dmg`, `.msi`, `.deb`), install the Tauri CLI
 
 The headless CLI is handy for testing: `cargo run -p rotator-core --bin wallpaper-rotator-cli -- rotate` (also `status`, `cleanup`, `displays`, `paths`). Don't run `rotate` while the tray app is running.
 
+### Photo sources against the real APIs
+
+The source tests parse replies recorded from the real APIs, in `crates/core/tests/fixtures/sources/`. To record them again:
+
+```sh
+cargo run -p rotator-core --bin record-fixtures              # every source you have keys for
+cargo run -p rotator-core --bin record-fixtures -- wallhaven # or only some
+```
+
+It sends the app's own requests, keeps the first 4 photos of each list, drops fields about the key's account, checks the result with the app's parser, and refuses to record a reply that contains a key. Keys come from `UNSPLASH_ACCESS_KEY` and `PEXELS_API_KEY`, else from the app's settings. Its messages and errors, and the live check's report and issue, have keys and other credentials (`client_id=`, `api_key=`, `Authorization` values) replaced with `[redacted]`. Review the diff before committing. The Pexels fixtures are still hand-written until they are recorded with a key.
+
+The [Live sources](.github/workflows/live-sources.yml) workflow runs nightly and on demand, never on pull requests. For each source it makes one real request through the app's code, checks a photo comes back with a credit and a download URL, then downloads that image and checks it decodes at least 1920 wide and 1080 high. For Unsplash it also reports the download, as the app does. Unsplash and Pexels run only when the `UNSPLASH_ACCESS_KEY` and `PEXELS_API_KEY` repository secrets exist; otherwise the job summary warns "NOT VERIFIED". A failure opens (or updates) one `bug` issue naming the source, the HTTP status and the field that failed. Run it locally with `cargo run -p rotator-core --bin live-sources`.
+
 ## Releasing
 
 The installers fetch the files attached to the latest GitHub release. To publish a new version:

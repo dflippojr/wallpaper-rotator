@@ -387,13 +387,21 @@ impl Service {
     }
 
     fn fail(&mut self, e: anyhow::Error) {
-        let message = format!("{e:#}");
+        let message = self.scrub(&format!("{e:#}"));
         log::write(&self.paths.log_file, &format!("error: {message}"));
         self.error = Some(message);
     }
 
     fn log(&self, message: &str) {
-        log::write(&self.paths.log_file, message);
+        log::write(&self.paths.log_file, &self.scrub(message));
+    }
+
+    /// `text` without the keys: the saved ones and the environment's. A
+    /// source's error can quote its reply, and a reply can quote a key.
+    fn scrub(&self, text: &str) -> String {
+        let (env_unsplash, env_pexels) = keys(&self.config, true);
+        let (unsplash, pexels) = keys(&self.config, false);
+        net::scrub(text, &[&env_unsplash, &env_pexels, &unsplash, &pexels])
     }
 
     fn reload(&mut self) {

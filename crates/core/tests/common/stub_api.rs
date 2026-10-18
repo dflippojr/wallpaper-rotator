@@ -113,6 +113,7 @@ impl Request {
 #[derive(Default)]
 struct Shared {
     statuses: HashMap<Route, u16>,
+    bodies: HashMap<Route, String>,
     requests: Vec<Request>,
 }
 
@@ -169,6 +170,16 @@ impl StubApi {
     /// 200 restores the fixture.
     pub fn status(&self, route: Route, status: u16) {
         self.shared.lock().unwrap().statuses.insert(route, status);
+    }
+
+    /// Answers `route` with `body` instead of its fixture from now on.
+    #[allow(dead_code)] // Used by tests/probe.rs, not the worker journeys.
+    pub fn reply(&self, route: Route, body: &str) {
+        self.shared
+            .lock()
+            .unwrap()
+            .bodies
+            .insert(route, body.to_string());
     }
 
     /// Every request so far, oldest first.
@@ -230,10 +241,13 @@ fn serve(stream: TcpStream, addr: &str, shared: &Mutex<Shared>) -> std::io::Resu
         headers,
         route,
     };
-    let status = {
+    let (status, body) = {
         let mut shared = shared.lock().unwrap();
         shared.requests.push(request.clone());
-        shared.statuses.get(&route).copied().unwrap_or(200)
+        (
+            shared.statuses.get(&route).copied().unwrap_or(200),
+            shared.bodies.get(&route).cloned(),
+        )
     };
 
     let (content_type, body) = if status != 200 {
@@ -241,6 +255,8 @@ fn serve(stream: TcpStream, addr: &str, shared: &Mutex<Shared>) -> std::io::Resu
             "application/json",
             br#"{"errors": ["stub error"]}"#.to_vec(),
         )
+    } else if let Some(body) = body {
+        ("application/json", body.into_bytes())
     } else if let Some(fixture) = route.fixture() {
         (
             "application/json",

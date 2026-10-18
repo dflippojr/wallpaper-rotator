@@ -1,4 +1,79 @@
-{"images": [{"startdate": "20261014",
-    "urlbase": "/th?id=OHR.AmmoniteFossils_EN-US6354038755",
-    "copyright": "Ammonite fossils from the Jurassic Period (© J Nemchinova/Getty Images)",
-    "copyrightlink": "https://www.bing.com/search?q=National+Fossil+Day", "title": "Spirals"}]}
+{
+  "images": [
+    {
+      "bot": 1,
+      "copyright": "Dolbadarn Castle, Llanberis, Eryri National Park (Snowdonia), Wales (© joe daniel price/Getty Images)",
+      "copyrightlink": "https://www.bing.com/search?q=Eryri+National+Park+Wales&form=hpcapt&filters=HpDate%3a%2220261018_0700%22",
+      "drk": 1,
+      "enddate": "20261019",
+      "fullstartdate": "202610180700",
+      "hs": [],
+      "hsh": "5e751a9ace0e95ca2c6ab70145f17579",
+      "quiz": "/search?q=Bing+homepage+quiz&filters=WQOskey:%22HPQuiz_20261018_DolbadarnWales%22&FORM=HPQUIZ",
+      "startdate": "20261018",
+      "title": "75 and thriving",
+      "top": 1,
+      "url": "/th?id=OHR.DolbadarnWales_EN-US6620614213_1920x1080.jpg&rf=LaDigue_1920x1080.jpg&pid=hp",
+      "urlbase": "/th?id=OHR.DolbadarnWales_EN-US6620614213",
+      "wp": true
+    },
+    {
+      "bot": 1,
+      "copyright": "Life-size replica of Chauvet  cave art in Vallon-Pont-d'Arc, France (© Audrey Poree/Alamy)",
+      "copyrightlink": "https://www.bing.com/search?q=International+Archaeology+Day&form=hpcapt&filters=HpDate%3a%2220261017_0700%22",
+      "drk": 1,
+      "enddate": "20261018",
+      "fullstartdate": "202610170700",
+      "hs": [],
+      "hsh": "b446a1745d30d372bc3f367affdcb648",
+      "quiz": "/search?q=Bing+homepage+quiz&filters=WQOskey:%22HPQuiz_20261017_ChauvetPaintingsFrance%22&FORM=HPQUIZ",
+      "startdate": "20261017",
+      "title": "The past, unearthed",
+      "top": 1,
+      "url": "/th?id=OHR.ChauvetPaintingsFrance_EN-US6137200151_1920x1080.jpg&rf=LaDigue_1920x1080.jpg&pid=hp",
+      "urlbase": "/th?id=OHR.ChauvetPaintingsFrance_EN-US6137200151",
+      "wp": false
+    },
+    {
+      "bot": 1,
+      "copyright": "Mount Sneffels in the San Juan Mountains near Ridgway, Colorado (© lightphoto/Getty Images)",
+      "copyrightlink": "https://www.bing.com/search?q=Mount+Sneffels&form=hpcapt&filters=HpDate%3a%2220261016_0700%22",
+      "drk": 1,
+      "enddate": "20261017",
+      "fullstartdate": "202610160700",
+      "hs": [],
+      "hsh": "1fbd6203de00eef691ca704a9a7b1048",
+      "quiz": "/search?q=Bing+homepage+quiz&filters=WQOskey:%22HPQuiz_20261016_SneffelsAutumn%22&FORM=HPQUIZ",
+      "startdate": "20261016",
+      "title": "'Peak' into Colorado",
+      "top": 1,
+      "url": "/th?id=OHR.SneffelsAutumn_EN-US3953128777_1920x1080.jpg&rf=LaDigue_1920x1080.jpg&pid=hp",
+      "urlbase": "/th?id=OHR.SneffelsAutumn_EN-US3953128777",
+      "wp": true
+    },
+    {
+      "bot": 1,
+      "copyright": "View of the Wroclaw Market Square from the Witches' Bridge in Wroclaw, Poland (© Piotr Mitelski/Shutterstock)",
+      "copyrightlink": "https://www.bing.com/search?q=Wroclaw&form=hpcapt&filters=HpDate%3a%2220261015_0700%22",
+      "drk": 1,
+      "enddate": "20261016",
+      "fullstartdate": "202610150700",
+      "hs": [],
+      "hsh": "3c3036aa49e2c82e4c442fee970ad2d1",
+      "quiz": "/search?q=Bing+homepage+quiz&filters=WQOskey:%22HPQuiz_20261015_WroclawPoland%22&FORM=HPQUIZ",
+      "startdate": "20261015",
+      "title": "Bridges, rooftops, and twilight",
+      "top": 1,
+      "url": "/th?id=OHR.WroclawPoland_EN-US7757698922_1920x1080.jpg&rf=LaDigue_1920x1080.jpg&pid=hp",
+      "urlbase": "/th?id=OHR.WroclawPoland_EN-US7757698922",
+      "wp": true
+    }
+  ],
+  "tooltips": {
+    "loading": "Loading...",
+    "next": "Next image",
+    "previous": "Previous image",
+    "walle": "This image is not available to download as wallpaper.",
+    "walls": "Download this image. Use of this image is restricted to wallpaper only."
+  }
+}

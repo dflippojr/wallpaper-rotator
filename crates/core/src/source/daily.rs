@@ -12,10 +12,10 @@ use anyhow::{bail, Result};
 use serde::Deserialize;
 
 use super::{Candidate, Image, SourceId};
-use crate::net::Http;
+use crate::net::{parse, Call, Http};
 
 /// Days of Wikimedia history to offer (one request each).
-const WIKIMEDIA_DAYS: u64 = 5;
+pub const WIKIMEDIA_DAYS: u64 = 5;
 
 pub fn batch(http: &Http, today: u64) -> Result<Vec<Candidate>> {
     let mut out = Vec::new();
@@ -58,9 +58,20 @@ struct BingImage {
 }
 
 fn bing(http: &Http) -> Result<Vec<Candidate>> {
+    parse_bing(http.base("Bing"), &http.send(&bing_call(http))?)
+}
+
+pub fn bing_call(http: &Http) -> Call {
     let base = http.base("Bing");
-    let url = format!("{base}/HPImageArchive.aspx?format=js&idx=0&n=8&mkt=en-US");
-    let archive: BingArchive = http.get_json("Bing", &url, &[])?;
+    Call::new(
+        "Bing",
+        format!("{base}/HPImageArchive.aspx?format=js&idx=0&n=8&mkt=en-US"),
+    )
+}
+
+/// `base` is the Bing API's base URL, which also serves the images.
+pub fn parse_bing(base: &str, body: &str) -> Result<Vec<Candidate>> {
+    let archive: BingArchive = parse("Bing", body)?;
     Ok(archive
         .images
         .into_iter()
@@ -151,11 +162,21 @@ struct License {
 }
 
 fn wikimedia(http: &Http, y: i64, m: u32, d: u32) -> Result<Option<Candidate>> {
+    parse_wikimedia(&http.send(&wikimedia_call(http, y, m, d))?)
+}
+
+pub fn wikimedia_call(http: &Http, y: i64, m: u32, d: u32) -> Call {
     let url = format!(
         "{}/feed/v1/wikipedia/en/featured/{y}/{m:02}/{d:02}",
         http.base("Wikimedia")
     );
-    let featured: Featured = http.get_json("Wikimedia", &url, &[])?;
+    Call::new("Wikimedia", url)
+}
+
+/// The day's picture, or `None` when there is none or it can't be a
+/// wallpaper (a portrait, or not a JPEG or PNG).
+pub fn parse_wikimedia(body: &str) -> Result<Option<Candidate>> {
+    let featured: Featured = parse("Wikimedia", body)?;
     Ok(featured.image.and_then(wikimedia_candidate))
 }
 
@@ -236,45 +257,49 @@ mod tests {
 
     #[test]
     fn bing_credit_and_urls() {
-        let archive: BingArchive = serde_json::from_str(BING).unwrap();
-        let img = archive.images.into_iter().next().unwrap();
-        let c = bing_candidate("https://www.bing.com", img);
-        assert_eq!(c.id, "bing-20261014-AmmoniteFossils");
-        assert_eq!(c.author, "J Nemchinova/Getty Images");
+        let photos = parse_bing("https://www.bing.com", BING).unwrap();
+        assert_eq!(photos.len(), 4);
+        let c = &photos[0];
+        assert_eq!(c.id, "bing-20261018-DolbadarnWales");
+        assert_eq!(c.author, "joe daniel price/Getty Images");
         assert_eq!(
             c.description.as_deref(),
-            Some("Ammonite fossils from the Jurassic Period")
+            Some("Dolbadarn Castle, Llanberis, Eryri National Park (Snowdonia), Wales")
         );
+        assert!(c
+            .photo_url
+            .starts_with("https://www.bing.com/search?q=Eryri"));
         assert_eq!(
             c.image,
             Image::Full {
-                url: "https://www.bing.com/th?id=OHR.AmmoniteFossils_EN-US6354038755_UHD.jpg"
-                    .into()
+                url: "https://www.bing.com/th?id=OHR.DolbadarnWales_EN-US6620614213_UHD.jpg".into()
             }
         );
     }
 
     #[test]
     fn wikimedia_thumbnails_and_filters() {
-        let featured: Featured = serde_json::from_str(WIKIMEDIA).unwrap();
-        let c = wikimedia_candidate(featured.image.unwrap()).unwrap();
-        assert_eq!(c.author, "Frank Schulenburg (CC BY-SA 3.0)");
+        let c = parse_wikimedia(WIKIMEDIA).unwrap().unwrap();
+        assert_eq!(c.author, "Laitche (CC BY-SA 4.0)");
+        assert_eq!((c.width, c.height), (3935, 3263));
         assert_eq!(
             c.image,
             Image::Thumb {
-                template: "https://upload.wikimedia.org/wikipedia/commons/thumb/6/66/Great_Blue_Heron.jpg/{w}px-Great_Blue_Heron.jpg".into(),
-                original: "https://upload.wikimedia.org/wikipedia/commons/6/66/Great_Blue_Heron.jpg".into(),
+                template: "https://upload.wikimedia.org/wikipedia/commons/thumb/1/1b/Purple_beautyberry%2C_October_2015_-_Stacking.jpg/{w}px-Purple_beautyberry%2C_October_2015_-_Stacking.jpg".into(),
+                original: "https://upload.wikimedia.org/wikipedia/commons/1/1b/Purple_beautyberry%2C_October_2015_-_Stacking.jpg".into(),
             }
         );
 
-        let portrait = WIKIMEDIA.replace(
-            r#""width": 4790, "height": 3043"#,
-            r#""width": 3000, "height": 4000"#,
-        );
-        let featured: Featured = serde_json::from_str(&portrait).unwrap();
-        assert!(wikimedia_candidate(featured.image.unwrap()).is_none());
-        let svg = WIKIMEDIA.replace("Great_Blue_Heron.jpg?utm_source", "Map.svg?utm_source");
-        let featured: Featured = serde_json::from_str(&svg).unwrap();
-        assert!(wikimedia_candidate(featured.image.unwrap()).is_none());
+        // Edge cases the recording doesn't show: a portrait, an SVG, no picture.
+        let edited = |edit: &dyn Fn(&mut serde_json::Value)| {
+            let mut reply: serde_json::Value = serde_json::from_str(WIKIMEDIA).unwrap();
+            edit(&mut reply);
+            parse_wikimedia(&reply.to_string()).unwrap()
+        };
+        assert!(edited(&|r| r["image"]["image"]["height"] = 5000.into()).is_none());
+        assert!(edited(&|r| r["image"]["image"]["source"] =
+            "https://upload.wikimedia.org/wikipedia/commons/a/ab/Map.svg".into())
+        .is_none());
+        assert!(edited(&|r| r["image"] = serde_json::Value::Null).is_none());
     }
 }

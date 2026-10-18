@@ -6,7 +6,7 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
 use super::{Candidate, Image, SourceId};
-use crate::net::{encode, Http};
+use crate::net::{encode, parse, Call, Http};
 
 /// Appended to Unsplash links, as the API guidelines ask.
 pub const UTM: &str = "utm_source=wallpaper_rotator&utm_medium=referral";
@@ -82,15 +82,17 @@ fn auth(key: &str) -> String {
     format!("Client-ID {}", key.trim())
 }
 
-fn get_json<T: serde::de::DeserializeOwned>(http: &Http, key: &str, url: &str) -> Result<T> {
+fn call(key: &str, url: String) -> Call {
+    Call::new("Unsplash", url)
+        .header("Authorization", auth(key))
+        .header("Accept-Version", "v1")
+}
+
+fn send(http: &Http, call: &Call, key: &str) -> Result<String> {
     if key.trim().is_empty() {
         bail!("add your Unsplash access key in Settings");
     }
-    http.get_json(
-        "Unsplash",
-        url,
-        &[("Authorization", &auth(key)), ("Accept-Version", "v1")],
-    )
+    http.send(call)
 }
 
 /// What random photos come from. The API ignores collections and topics
@@ -140,6 +142,20 @@ pub fn batch(
     collections: &[String],
     username: &str,
 ) -> Result<Vec<Candidate>> {
+    let call = batch_call(http, key, query, topic_ids, collections, username);
+    let body = send(http, &call, key)
+        .map_err(|e| batch_error(e, selection(query, collections, username)))?;
+    parse_batch(&body)
+}
+
+pub fn batch_call(
+    http: &Http,
+    key: &str,
+    query: &str,
+    topic_ids: &[String],
+    collections: &[String],
+    username: &str,
+) -> Call {
     let url = batch_url(
         http.base("Unsplash"),
         query,
@@ -147,8 +163,11 @@ pub fn batch(
         collections,
         username,
     );
-    let photos: Vec<Photo> = get_json(http, key, &url)
-        .map_err(|e| batch_error(e, selection(query, collections, username)))?;
+    call(key, url)
+}
+
+pub fn parse_batch(body: &str) -> Result<Vec<Candidate>> {
+    let photos: Vec<Photo> = parse("Unsplash", body)?;
     Ok(photos.into_iter().map(candidate).collect())
 }
 
@@ -246,24 +265,34 @@ fn unsplash_path(value: &str) -> Option<&str> {
 
 /// Resolves a topic slug (or ID) to its ID.
 pub fn topic_id(http: &Http, key: &str, slug_or_id: &str) -> Result<String> {
+    send(http, &topic_call(http, key, slug_or_id), key)
+        .and_then(|body| parse_topic(&body))
+        .map_err(|e| e.context(format!("unknown Unsplash topic \"{slug_or_id}\"")))
+}
+
+pub fn topic_call(http: &Http, key: &str, slug_or_id: &str) -> Call {
     let url = format!(
         "{}/topics/{}",
         http.base("Unsplash"),
         encode(slug_or_id.trim())
     );
-    let topic: Topic = get_json(http, key, &url)
-        .map_err(|e| e.context(format!("unknown Unsplash topic \"{slug_or_id}\"")))?;
+    call(key, url)
+}
+
+pub fn parse_topic(body: &str) -> Result<String> {
+    let topic: Topic = parse("Unsplash", body)?;
     Ok(topic.id)
 }
 
 /// Tells Unsplash the photo was used, as the API terms require.
 pub fn track(http: &Http, key: &str, url: &str) -> Result<()> {
-    http.get(
-        "Unsplash",
-        url,
-        &[("Authorization", &auth(key)), ("Accept-Version", "v1")],
-    )?;
+    http.send(&track_call(key, url))?;
     Ok(())
+}
+
+/// The download report for a photo's `download_location`.
+pub fn track_call(key: &str, url: &str) -> Call {
+    call(key, url.to_string())
 }
 
 fn candidate(photo: Photo) -> Candidate {
@@ -305,42 +334,82 @@ pub fn with_utm(url: &str) -> String {
 mod tests {
     use super::*;
 
-    /// A `/photos/random` reply; the worker journeys serve it too.
+    /// A recorded `/photos/random` reply; the worker journeys serve it too.
     const SAMPLE: &str = include_str!("../../tests/fixtures/sources/unsplash/random.json");
+    /// A recorded `/photos/random?query=mountains` reply.
+    const SEARCH: &str = include_str!("../../tests/fixtures/sources/unsplash/search.json");
 
     #[test]
     fn turns_photos_into_candidates() {
-        let photos: Vec<Photo> = serde_json::from_str(SAMPLE).unwrap();
-        let c = candidate(photos[0].clone());
-        assert_eq!(c.id, "abc123");
-        assert_eq!(c.author, "Mario Dobelmann");
-        assert_eq!(c.location.as_deref(), Some("Kirchsee, Germany"));
-        assert_eq!(c.description.as_deref(), Some("a lake at sunset"));
+        let photos = parse_batch(SAMPLE).unwrap();
+        assert_eq!(photos.len(), 4);
+        let c = photos[3].clone();
+        assert_eq!(c.id, "I-B7DT1Sfu8");
+        assert_eq!((c.width, c.height), (6000, 4000));
+        assert_eq!(c.author, "Andreas Schmidt");
+        assert_eq!(
+            c.author_url,
+            format!("https://unsplash.com/@as_capture?{UTM}")
+        );
+        assert_eq!(
+            c.location.as_deref(),
+            Some("Lummenfelsen, Helgoland, Deutschland")
+        );
+        // No description, so the alt text stands in.
+        assert_eq!(
+            c.description.as_deref(),
+            Some("A fluffy white northern gannet chick among other gannets in soft golden light")
+        );
         assert!(c.photo_url.ends_with(UTM));
-        assert!(c.track_url.unwrap().contains("/download"));
+        assert!(c
+            .track_url
+            .unwrap()
+            .starts_with("https://api.unsplash.com/photos/I-B7DT1Sfu8/download?ixid="));
         let Image::Sized { url } = c.image else {
             panic!()
         };
+        assert!(
+            url.starts_with("https://images.unsplash.com/photo-1791829187775-fe732be6d654?ixid=")
+        );
+        assert!(url.ends_with("&ixlib=rb-4.1.0&w={w}&h={h}&fit=crop&crop=entropy&fm=jpg&q=85"));
+
         assert_eq!(
-            url,
-            "https://images.unsplash.com/photo-1?ixid=x&ixlib=rb-4.0.3&w={w}&h={h}&fit=crop&crop=entropy&fm=jpg&q=85"
+            photos[0].description.as_deref(),
+            Some("Polaroid 20 x 24, from Photopia series")
+        );
+        let search = parse_batch(SEARCH).unwrap();
+        assert_eq!(
+            search[0].location.as_deref(),
+            Some("Zion National Park, United States")
         );
     }
 
     #[test]
     fn location_is_optional() {
-        let without = SAMPLE.replace(
-            r#""location": {"name": null, "city": "Kirchsee", "country": "Germany"}"#,
-            r#""location": null"#,
-        );
-        let photos: Vec<Photo> = serde_json::from_str(&without).unwrap();
-        assert!(photos[0].location.is_none());
+        // Recorded: a location whose name, city and country are all null.
+        let photos = parse_batch(SAMPLE).unwrap();
+        assert_eq!(photos[0].location, None);
+        let mut reply: serde_json::Value = serde_json::from_str(SAMPLE).unwrap();
+        reply[3]["location"] = serde_json::Value::Null;
+        assert_eq!(parse_batch(&reply.to_string()).unwrap()[3].location, None);
         let empty = Location {
             name: Some(" ".into()),
             city: None,
             country: Some("".into()),
         };
         assert_eq!(empty.label(), None);
+        let unnamed = Location {
+            name: None,
+            city: Some("Kirchsee".into()),
+            country: Some("Germany".into()),
+        };
+        assert_eq!(unnamed.label().as_deref(), Some("Kirchsee, Germany"));
+    }
+
+    #[test]
+    fn topics_resolve_to_their_id() {
+        let topic = include_str!("../../tests/fixtures/sources/unsplash/topic.json");
+        assert_eq!(parse_topic(topic).unwrap(), "bo8jQKTaE0Y");
     }
 
     #[test]

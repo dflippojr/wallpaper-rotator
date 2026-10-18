@@ -7,7 +7,7 @@ use anyhow::Result;
 use serde::Deserialize;
 
 use super::{Candidate, Image, SourceId};
-use crate::net::{encode, Http};
+use crate::net::{encode, parse, Call, Http};
 
 #[derive(Deserialize)]
 struct Page {
@@ -34,6 +34,10 @@ struct Thumbs {
 /// A random page (24) of SFW, general, landscape wallpapers at least
 /// `min_width`x`min_height`, matching `query` if given.
 pub fn batch(http: &Http, query: &str, min_width: u32, min_height: u32) -> Result<Vec<Candidate>> {
+    parse_search(&http.send(&search_call(http, query, min_width, min_height))?)
+}
+
+pub fn search_call(http: &Http, query: &str, min_width: u32, min_height: u32) -> Call {
     let mut url = format!(
         "{}/api/v1/search?categories=100&purity=100&sorting=random&ratios=landscape&atleast={min_width}x{min_height}",
         http.base("Wallhaven")
@@ -43,7 +47,11 @@ pub fn batch(http: &Http, query: &str, min_width: u32, min_height: u32) -> Resul
         url.push_str("&q=");
         url.push_str(&encode(query));
     }
-    let page: Page = http.get_json("Wallhaven", &url, &[])?;
+    Call::new("Wallhaven", url)
+}
+
+pub fn parse_search(body: &str) -> Result<Vec<Candidate>> {
+    let page: Page = parse("Wallhaven", body)?;
     Ok(page.data.into_iter().map(candidate).collect())
 }
 
@@ -74,14 +82,18 @@ mod tests {
 
     #[test]
     fn parses_search_results() {
-        let page: Page = serde_json::from_str(SAMPLE).unwrap();
-        let c = candidate(page.data.into_iter().next().unwrap());
-        assert_eq!((c.width, c.height), (5184, 3456));
-        assert_eq!(c.color.as_deref(), Some("#999999"));
+        let photos = parse_search(SAMPLE).unwrap();
+        assert_eq!(photos.len(), 4);
+        let c = &photos[0];
+        assert_eq!(c.id, "o3v5kl");
+        assert_eq!((c.width, c.height), (3840, 2160));
+        assert_eq!(c.color.as_deref(), Some("#000000"));
+        assert_eq!(c.photo_url, "https://wallhaven.cc/w/o3v5kl");
+        assert_eq!(c.preview_url, "https://th.wallhaven.cc/lg/o3/o3v5kl.jpg");
         assert_eq!(
             c.image,
             Image::Full {
-                url: "https://w.wallhaven.cc/full/d5/wallhaven-d5wlmj.jpg".into()
+                url: "https://w.wallhaven.cc/full/o3/wallhaven-o3v5kl.jpg".into()
             }
         );
     }

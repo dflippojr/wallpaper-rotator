@@ -13,6 +13,16 @@ name = "rotator_core"
 name = "wallpaper-rotator-cli"
 path = "src/bin/cli.rs"
 
+# Records the photo APIs' real replies as test fixtures.
+[[bin]]
+name = "record-fixtures"
+path = "src/bin/record_fixtures.rs"
+
+# The nightly live check of every photo source (.github/workflows/live-sources.yml).
+[[bin]]
+name = "live-sources"
+path = "src/bin/live_sources.rs"
+
 [dependencies]
 anyhow = "1"
 directories = "6"
