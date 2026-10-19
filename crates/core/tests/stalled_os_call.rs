@@ -166,10 +166,13 @@ fn a_failed_restoration_fails_the_run_and_keeps_the_first_error() {
     )
     .unwrap_err();
     let text = format!("{err:#}");
-    assert!(text.contains("check failed") && text.contains("setter refused"), "{text}");
+    assert!(
+        text.contains("check failed") && text.contains("setter refused"),
+        "{text}"
+    );
 
-    let err = with_restoration(|| Ok(()), || Ok(()), |()| Err(anyhow!("setter refused")))
-        .unwrap_err();
+    let err =
+        with_restoration(|| Ok(()), || Ok(()), |()| Err(anyhow!("setter refused"))).unwrap_err();
     assert!(format!("{err:#}").contains("could not restore"), "{err:#}");
 }
 
@@ -185,6 +188,9 @@ fn nothing_runs_when_the_original_cannot_be_saved() {
         |()| Ok(()),
     )
     .unwrap_err();
-    assert!(!ran.get(), "the checks changed a desktop that was not saved");
+    assert!(
+        !ran.get(),
+        "the checks changed a desktop that was not saved"
+    );
     assert!(format!("{err:#}").contains("could not save"), "{err:#}");
 }

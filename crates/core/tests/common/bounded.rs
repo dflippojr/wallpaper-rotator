@@ -4,14 +4,19 @@
 //! Shared by the opt-in OS harness, the real-app probe and the ordinary tests
 //! in `stalled_os_call.rs`, so none of it touches the desktop.
 
+// Each includer uses a different part (macOS never abandons a call).
+#![allow(dead_code)]
+
 use std::env;
 use std::fmt;
 use std::fs;
+use std::io::Read;
 use std::io::Write as _;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
-use std::process::{self, Command, Output};
-use std::thread::sleep;
+use std::process::{self, Command, Output, Stdio};
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::thread::{self, sleep};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
@@ -35,9 +40,55 @@ impl std::error::Error for Stalled {}
 /// Runs `cmd` to completion, but not for longer than `limit`: after that the
 /// child is killed and the error is [`Stalled`].
 pub fn run_bounded(cmd: &mut Command, limit: Duration) -> Result<Output> {
-    let _ = limit;
     let name = cmd.get_program().to_string_lossy().into_owned();
-    cmd.output().with_context(|| format!("could not run {name}"))
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("could not run {name}"))?;
+    let stdout = drain(child.stdout.take());
+    let stderr = drain(child.stderr.take());
+    let deadline = Instant::now() + limit;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(Stalled(format!(
+                "{name} did not finish within {:.0} s; killed it",
+                limit.as_secs_f64()
+            ))
+            .into());
+        }
+        sleep(Duration::from_millis(20));
+    };
+    Ok(Output {
+        status,
+        stdout: stdout
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap_or_default(),
+        stderr: stderr
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap_or_default(),
+    })
+}
+
+/// Reads a child's pipe on its own thread, so a full pipe can't block the
+/// child while the deadline runs. A grandchild that keeps the pipe open
+/// after the kill only strands this thread, not the caller.
+fn drain(pipe: Option<impl Read + Send + 'static>) -> mpsc::Receiver<Vec<u8>> {
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut pipe) = pipe {
+            let _ = pipe.read_to_end(&mut buf);
+        }
+        let _ = tx.send(buf);
+    });
+    rx
 }
 
 /// Runs `call` and gives up on it after `limit`. The call keeps running on
@@ -47,8 +98,19 @@ pub fn call_within<T: Send + 'static>(
     limit: Duration,
     call: impl FnOnce() -> Result<T> + Send + 'static,
 ) -> Result<T> {
-    let _ = limit;
-    call()
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = tx.send(call());
+    });
+    match rx.recv_timeout(limit) {
+        Ok(result) => result,
+        Err(RecvTimeoutError::Timeout) => Err(Stalled(format!(
+            "an OS call did not return within {:.0} s; left it on its worker thread",
+            limit.as_secs_f64()
+        ))
+        .into()),
+        Err(RecvTimeoutError::Disconnected) => Err(anyhow!("an OS call panicked")),
+    }
 }
 
 /// Asks the OS for what the desktop shows until `attempt` says it matches,
@@ -143,7 +205,9 @@ pub fn stall_if_asked() {
 /// was killed.
 pub fn stall_command(args: &[&str], heartbeat: Option<&Path>) -> Command {
     let mut cmd = Command::new(env::current_exe().expect("the current executable"));
-    cmd.args(args)
-        .env(STALL_ENV, heartbeat.map_or("-".into(), |p| p.as_os_str().to_owned()));
+    cmd.args(args).env(
+        STALL_ENV,
+        heartbeat.map_or("-".into(), |p| p.as_os_str().to_owned()),
+    );
     cmd
 }
