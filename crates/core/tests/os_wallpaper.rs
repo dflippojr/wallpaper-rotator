@@ -662,7 +662,7 @@ mod os {
                 continue;
             }
             wallpaper::set(&Layout::Same(red.to_path_buf()))?;
-            read_back(&Layout::Same(red.to_path_buf()), Colour::Red)?;
+            super::read_back(&Layout::Same(red.to_path_buf()), Colour::Red)?;
             for (i, display) in displays.iter().enumerate() {
                 if case == "restore-solid" || (case == "restore-mixed" && i % 2 == 0) {
                     unsafe {
@@ -680,7 +680,7 @@ mod os {
             let position = saved.position;
             let background = unsafe { desktop.GetBackgroundColor()? };
             wallpaper::set(&Layout::Same(blue.to_path_buf()))?;
-            read_back(&Layout::Same(blue.to_path_buf()), Colour::Blue)?;
+            super::read_back(&Layout::Same(blue.to_path_buf()), Colour::Blue)?;
             restore(saved)?;
 
             let deadline = Instant::now() + Duration::from_secs(10);
