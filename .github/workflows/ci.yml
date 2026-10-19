@@ -53,6 +53,13 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
         run: cargo test --workspace
+      - name: Release scripts on the system macOS Bash
+        if: runner.os == 'macOS'
+        run: |
+          for script in scripts/smoke-installed.sh scripts/prepare-bundle-cli.sh scripts/test-release-smoke.sh; do
+            /bin/bash -n "$script"
+          done
+          /bin/bash scripts/test-release-smoke.sh
       - name: Install cargo-llvm-cov
         if: runner.os == 'Linux'
         uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28

@@ -161,6 +161,20 @@ jobs:
         if: runner.os == 'Windows'
         shell: powershell
         run: .\scripts\smoke-installed.ps1 -Assets .\dist
+      - name: Require completed installed-app evidence
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            Linux) kinds='deb appimage' ;;
+            macOS) kinds=dmg ;;
+            Windows) kinds=nsis ;;
+            *) exit 1 ;;
+          esac
+          for kind in $kinds; do
+            for proof in paths status alive purge; do
+              test -s "smoke-out/$kind-$proof.txt" || { echo "Missing $kind $proof evidence" >&2; exit 1; }
+            done
+          done
       - name: Record the OS result
         if: always()
         shell: bash
@@ -173,7 +187,7 @@ jobs:
         with:
           name: smoke-${{ matrix.os }}
           path: smoke-out/
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 14
 
   publish:
