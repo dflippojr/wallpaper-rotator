@@ -53,6 +53,13 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
         run: cargo test --workspace
+      - name: Release scripts on the system macOS Bash
+        if: runner.os == 'macOS'
+        run: |
+          for script in scripts/smoke-installed.sh scripts/prepare-bundle-cli.sh scripts/test-release-smoke.sh; do
+            /bin/bash -n "$script"
+          done
+          /bin/bash scripts/test-release-smoke.sh
       - name: Install cargo-llvm-cov
         if: runner.os == 'Linux'
         uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
@@ -189,7 +196,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Lint the shell scripts
-        run: shellcheck -S warning install.sh scripts/build-release.sh
+        run: shellcheck -S warning install.sh scripts/build-release.sh scripts/prepare-bundle-cli.sh scripts/smoke-installed.sh scripts/test-release-smoke.sh
+      - name: Release smoke regression checks
+        run: bash scripts/test-release-smoke.sh
       - name: Dry-run install.sh
         env:
           XDG_CURRENT_DESKTOP: ubuntu:GNOME
@@ -210,6 +219,8 @@ jobs:
         run: |
           $errors = $null
           [System.Management.Automation.Language.Parser]::ParseFile("$PWD\install.ps1", [ref]$null, [ref]$errors) | Out-Null
+          if ($errors) { $errors | ForEach-Object { $_.ToString() }; exit 1 }
+          [System.Management.Automation.Language.Parser]::ParseFile("$PWD\scripts\smoke-installed.ps1", [ref]$null, [ref]$errors) | Out-Null
           if ($errors) { $errors | ForEach-Object { $_.ToString() }; exit 1 }
           .\install.ps1 -DryRun
           .\install.ps1 -Uninstall -Purge -DryRun

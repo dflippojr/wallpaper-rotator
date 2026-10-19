@@ -1,18 +1,26 @@
 name: Release
 
-# Push a tag like v0.3.0 (matching the version in app/tauri.conf.json) to
-# build every installer and publish them as a GitHub release. The release
-# stays a draft until all builds have uploaded, so install.sh and
-# install.ps1 never see a half-finished one.
+# Tags publish only after every build and installed-app smoke succeeds.
+# Weekly/manual runs build the selected main/ref afresh and never publish.
 on:
   push:
     tags: ["v*"]
+  schedule:
+    - cron: "19 8 * * 1"
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+
+env:
+  CARGO_BUILD_JOBS: "4"
+  RUST_TEST_THREADS: "4"
 
 jobs:
   create:
+    if: github.event_name == 'push'
+    permissions:
+      contents: write
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -30,18 +38,21 @@ jobs:
 
   build:
     needs: create
+    if: >-
+      always() && !cancelled() &&
+      (needs.create.result == 'success' || needs.create.result == 'skipped')
+    permissions:
+      contents: write
     name: build (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Built on 22.04 so the packages run on Ubuntu 22.04 and later
-          # (glibc 2.35, what install.sh expects).
+          # glibc 2.35, matching install.sh's minimum Ubuntu version.
           - os: ubuntu-22.04
             bundles: deb,appimage
           - os: ubuntu-22.04-arm
             bundles: deb
-          # One app for Apple silicon and Intel Macs.
           - os: macos-latest
             bundles: dmg
             target: universal-apple-darwin
@@ -63,34 +74,163 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev libxdo-dev
+      - name: Build the installed CLI
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: bash scripts/prepare-bundle-cli.sh ${TARGET:+"$TARGET"}
       - name: Build the installers
         working-directory: app
         shell: bash
         env:
-          # The AppImage tooling is itself an AppImage; no FUSE needed this way.
           APPIMAGE_EXTRACT_AND_RUN: "1"
           TARGET: ${{ matrix.target }}
-        run: npx --yes @tauri-apps/cli@2 build --bundles ${{ matrix.bundles }} ${TARGET:+--target "$TARGET"}
-      - name: Upload them to the release
+        run: npx --yes @tauri-apps/cli@2 build --config tauri.bundle.conf.json --bundles ${{ matrix.bundles }} ${TARGET:+--target "$TARGET"}
+      - name: Collect the built installers
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          mkdir dist
+          find "target/${TARGET:+$TARGET/}release/bundle" -type f \
+            \( -name '*.deb' -o -name '*.AppImage' -o -name '*.dmg' -o -name '*-setup.exe' \) \
+            -exec cp {} dist/ \;
+          for f in dist/*\ *; do
+            if [ -e "$f" ]; then mv "$f" "${f// /-}"; fi
+          done
+          test -n "$(ls -A dist)"
+          ls -l dist
+      - name: Upload to the draft release
+        if: github.event_name == 'push'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          mkdir dist
-          # target/release/bundle, or target/<triple>/release/bundle.
-          find target -path '*/release/bundle/*' -type f \
-            \( -name '*.deb' -o -name '*.AppImage' -o -name '*.dmg' -o -name '*-setup.exe' \) \
-            -exec cp {} dist/ \;
-          # Dashes instead of spaces, as install.sh and install.ps1 expect.
-          for f in dist/*\ *; do [ -e "$f" ] && mv "$f" "${f// /-}"; done
-          ls -l dist
           gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          # Read draft assets with this job's existing push access. Smoke stays
+          # read-only and receives only bytes downloaded from the draft.
+          mkdir draft-assets
+          for asset in dist/*; do
+            gh release download "$GITHUB_REF_NAME" --dir draft-assets --pattern "$(basename "$asset")"
+          done
+          cp draft-assets/* dist/
+      - name: Keep the exact installers for fresh smoke runners
+        uses: actions/upload-artifact@v4
+        with:
+          name: installers-${{ matrix.os }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  smoke:
+    needs: build
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    name: smoke (${{ matrix.os }})
+    # A fresh runner installs the exact assets uploaded by build, not its target/ tree.
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+          - os: macos-latest
+          - os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Download the exact draft assets or fresh non-release build
+        uses: actions/download-artifact@v4
+        with:
+          name: installers-${{ matrix.os }}
+          path: dist
+      - name: Install the headless Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb xauth dbus-x11 at-spi2-core trayer libwebkit2gtk-4.1-0 libayatana-appindicator3-1 libxdo3
+      - name: Smoke installed app (Linux)
+        if: runner.os == 'Linux'
+        env:
+          XDG_CURRENT_DESKTOP: GNOME
+          WEBKIT_DISABLE_COMPOSITING_MODE: "1"
+        run: xvfb-run -a dbus-run-session -- bash scripts/smoke-installed.sh dist
+      - name: Smoke installed app (macOS)
+        if: runner.os == 'macOS'
+        run: bash scripts/smoke-installed.sh dist
+      - name: Smoke installed app (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: .\scripts\smoke-installed.ps1 -Assets .\dist
+      - name: Require completed installed-app evidence
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            Linux) kinds='deb appimage' ;;
+            macOS) kinds=dmg ;;
+            Windows) kinds=nsis ;;
+            *) exit 1 ;;
+          esac
+          for kind in $kinds; do
+            for proof in paths status alive purge; do
+              test -s "smoke-out/$kind-$proof.txt" || { echo "Missing $kind $proof evidence" >&2; exit 1; }
+            done
+          done
+      - name: Record the OS result
+        if: always()
+        shell: bash
+        env:
+          RESULT: ${{ job.status }}
+        run: printf '### %s installer smoke\n\n**%s**\n' "$RUNNER_OS" "$RESULT" >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep launch, CLI, log and purge evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-${{ matrix.os }}
+          path: smoke-out/
+          if-no-files-found: error
+          retention-days: 14
 
   publish:
-    needs: build
+    needs: [build, smoke]
+    if: ${{ !cancelled() && needs.build.result == 'success' && needs.smoke.result == 'success' }}
+    permissions:
+      contents: write
     runs-on: ubuntu-24.04
     steps:
       - name: Publish the release
+        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+      - name: Non-publishing gate proof
+        if: github.event_name != 'push'
+        run: echo 'All builds and smoke legs passed. This weekly/manual run does not publish.' >> "$GITHUB_STEP_SUMMARY"
+
+  report-scheduled-failure:
+    needs: [build, smoke]
+    if: >-
+      always() && github.event_name == 'schedule' &&
+      (needs.build.result == 'failure' || needs.smoke.result == 'failure')
+    permissions:
+      contents: read
+      issues: write
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Open or update the installer smoke bug
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          SMOKE_RESULT: ${{ needs.smoke.result }}
+        run: |
+          title='Installer smoke failure (weekly main build)'
+          printf 'Weekly installer smoke failed on main.\n\nBuild: %s; smoke: %s\n\nRun and OS summaries: %s\n' \
+            "$BUILD_RESULT" "$SMOKE_RESULT" "$RUN_URL" > failure.md
+          issue=$(gh issue list --state open --label bug --search '"Installer smoke failure" in:title' \
+            --json number,title --jq '.[] | select(.title == "Installer smoke failure (weekly main build)") | .number' | sed -n '1p')
+          if [ -n "$issue" ]; then
+            gh issue comment "$issue" --body-file failure.md
+          else
+            gh issue create --title "$title" --label bug --body-file failure.md
+          fi

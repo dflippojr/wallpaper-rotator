@@ -30,13 +30,15 @@ in_docker() {
 case "${1:-}" in
   linux)
     in_docker '
-      cargo tauri build --bundles deb,appimage
+      bash ../scripts/prepare-bundle-cli.sh
+      cargo tauri build --config tauri.bundle.conf.json --bundles deb,appimage
       cp /target/release/bundle/deb/*.deb /target/release/bundle/appimage/*.AppImage /dist/
     '
     ;;
   windows)
     in_docker '
-      cargo tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis
+      bash ../scripts/prepare-bundle-cli.sh x86_64-pc-windows-msvc xwin
+      cargo tauri build --config tauri.bundle.conf.json --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis
       cp /target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe /dist/
     '
     ;;
@@ -45,7 +47,8 @@ case "${1:-}" in
     # CI=true skips the Finder AppleScript that lays out the disk image
     # window, which would otherwise ask for automation permission.
     rustup target add aarch64-apple-darwin x86_64-apple-darwin
-    (cd app && CI=true cargo tauri build --bundles dmg --target universal-apple-darwin)
+    bash scripts/prepare-bundle-cli.sh universal-apple-darwin
+    (cd app && CI=true cargo tauri build --config tauri.bundle.conf.json --bundles dmg --target universal-apple-darwin)
     cp target/universal-apple-darwin/release/bundle/dmg/*.dmg dist/
     ;;
   *)
