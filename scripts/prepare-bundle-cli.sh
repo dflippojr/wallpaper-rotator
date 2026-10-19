@@ -9,7 +9,11 @@ build() {
   local triple=$1
   local cargo=(cargo)
   if [ "${2:-}" = xwin ]; then cargo+=(xwin); fi
-  "${cargo[@]}" build --locked --release -p rotator-core --bin wallpaper-rotator-cli --target "$triple" -j 4
+  "${cargo[@]}" build --locked --release -p rotator-core --bin wallpaper-rotator-cli --target "$triple" -j "${CARGO_BUILD_JOBS:-4}"
+  local suffix=""
+  case "$triple" in *windows*) suffix=.exe ;; esac
+  cp "${CARGO_TARGET_DIR:-target}/$triple/release/wallpaper-rotator-cli$suffix" \
+    "app/binaries/wallpaper-rotator-cli-$triple$suffix"
 }
 if [ "$target" = universal-apple-darwin ]; then
   build aarch64-apple-darwin
@@ -19,8 +23,4 @@ if [ "$target" = universal-apple-darwin ]; then
     -output "app/binaries/wallpaper-rotator-cli-$target"
 else
   build "$target" "${2:-}"
-  suffix=""
-  case "$target" in *windows*) suffix=.exe ;; esac
-  cp "${CARGO_TARGET_DIR:-target}/$target/release/wallpaper-rotator-cli$suffix" \
-    "app/binaries/wallpaper-rotator-cli-$target$suffix"
 fi

@@ -8,12 +8,6 @@ on:
   schedule:
     - cron: "19 8 * * 1"
   workflow_dispatch:
-    inputs:
-      fail_smoke_os:
-        description: "Negative gate proof only: intentionally fail one smoke leg"
-        default: none
-        type: choice
-        options: [none, Linux, macOS, Windows]
 
 permissions:
   contents: read
@@ -111,9 +105,16 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$GITHUB_REF_NAME" dist/* --clobber
-      - name: Keep installers for non-publishing smoke runs
-        if: github.event_name != 'push'
+        run: |
+          gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          # Read draft assets with this job's existing push access. Smoke stays
+          # read-only and receives only bytes downloaded from the draft.
+          mkdir draft-assets
+          for asset in dist/*; do
+            gh release download "$GITHUB_REF_NAME" --dir draft-assets --pattern "$(basename "$asset")"
+          done
+          cp draft-assets/* dist/
+      - name: Keep the exact installers for fresh smoke runners
         uses: actions/upload-artifact@v4
         with:
           name: installers-${{ matrix.os }}
@@ -132,27 +133,12 @@ jobs:
       matrix:
         include:
           - os: ubuntu-22.04
-            patterns: '["*amd64.deb", "*.AppImage"]'
           - os: macos-latest
-            patterns: '["*.dmg"]'
           - os: windows-latest
-            patterns: '["*x64-setup.exe"]'
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
-      - name: Download the draft release assets
-        if: github.event_name == 'push'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PATTERNS: ${{ matrix.patterns }}
-        run: |
-          mkdir dist
-          while IFS= read -r pattern; do
-            gh release download "$GITHUB_REF_NAME" --dir dist --pattern "$pattern"
-          done < <(printf '%s' "$PATTERNS" | jq -r '.[]')
-      - name: Download the fresh non-release build
-        if: github.event_name != 'push'
+      - name: Download the exact draft assets or fresh non-release build
         uses: actions/download-artifact@v4
         with:
           name: installers-${{ matrix.os }}
@@ -165,20 +151,15 @@ jobs:
       - name: Smoke installed app (Linux)
         if: runner.os == 'Linux'
         env:
-          SMOKE_FORCE_FAILURE: ${{ inputs.fail_smoke_os == runner.os && '1' || '0' }}
           XDG_CURRENT_DESKTOP: GNOME
           WEBKIT_DISABLE_COMPOSITING_MODE: "1"
         run: xvfb-run -a dbus-run-session -- bash scripts/smoke-installed.sh dist
       - name: Smoke installed app (macOS)
         if: runner.os == 'macOS'
-        env:
-          SMOKE_FORCE_FAILURE: ${{ inputs.fail_smoke_os == runner.os && '1' || '0' }}
         run: bash scripts/smoke-installed.sh dist
       - name: Smoke installed app (Windows PowerShell 5.1)
         if: runner.os == 'Windows'
         shell: powershell
-        env:
-          SMOKE_FORCE_FAILURE: ${{ inputs.fail_smoke_os == runner.os && '1' || '0' }}
         run: .\scripts\smoke-installed.ps1 -Assets .\dist
       - name: Record the OS result
         if: always()

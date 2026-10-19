@@ -126,7 +126,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Lint the shell scripts
-        run: shellcheck -S warning install.sh scripts/build-release.sh scripts/prepare-bundle-cli.sh scripts/smoke-installed.sh
+        run: shellcheck -S warning install.sh scripts/build-release.sh scripts/prepare-bundle-cli.sh scripts/smoke-installed.sh scripts/test-release-smoke.sh
+      - name: Release smoke regression checks
+        run: bash scripts/test-release-smoke.sh
       - name: Dry-run install.sh
         env:
           XDG_CURRENT_DESKTOP: ubuntu:GNOME

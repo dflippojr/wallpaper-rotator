@@ -52,16 +52,20 @@ read_paths() {
   done
 }
 inspect_log() {
+  local logs=("$evidence/$kind-output.log") result
   if [ -f "$log" ]; then
     cp "$log" "$evidence/$kind-rotator.log"
+    logs+=("$evidence/$kind-rotator.log")
   else
     # A fresh no-key startup has nothing to log. The config below proves setup ran.
     printf 'No application log was created on no-key startup.\n' > "$evidence/$kind-log-check.txt"
   fi
   [ -f "$evidence/$kind-output.log" ] || { echo 'Missing launch output capture' >&2; exit 1; }
-  if grep -Ei '(^|[[:space:]])(error|fatal|panic|panicked|failed|could not)(:|[[:space:]])' \
-      "$evidence/$kind-output.log" "$evidence/$kind-rotator.log" 2>/dev/null; then
+  if grep -Ei '(^|[[:space:]-])(error|fatal|panic|panicked|failed|could not)(:|[[:space:]])' "${logs[@]}"; then
     echo 'Application logged an error' >&2; exit 1
+  else
+    result=$?
+    [ "$result" = 1 ] || { echo "Could not inspect application logs (grep exit $result)" >&2; exit 1; }
   fi
 }
 exercise() {
@@ -133,8 +137,3 @@ case "$(uname -s)" in
     ;;
   *) echo 'Only Linux and macOS are supported; Windows uses smoke-installed.ps1' >&2; exit 2 ;;
 esac
-# A manual dispatch can exercise the release gate without changing an installer or publishing.
-if [ "${SMOKE_FORCE_FAILURE:-0}" = 1 ]; then
-  echo 'Intentional negative proof: assert a missing uninstall evidence path exists.' >&2
-  test -e "$evidence/intentionally-missing-uninstall-proof"
-fi

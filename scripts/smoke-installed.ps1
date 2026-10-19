@@ -89,9 +89,6 @@ try {
     if (Get-Process -Name wallpaper-rotator -ErrorAction SilentlyContinue) { throw 'Installed app still running after uninstall.' }
     'NSIS: all five CLI paths, installed executables and uninstall registration removed' |
         Tee-Object -FilePath (Join-Path $evidence 'nsis-purge.txt')
-    if ($env:SMOKE_FORCE_FAILURE -eq '1') {
-        throw 'Intentional negative proof: missing uninstall evidence path.'
-    }
     $passed = $true
 } finally {
     if ($app -and -not $app.HasExited) { Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue }
