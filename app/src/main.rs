@@ -455,7 +455,11 @@ fn main() {
             let _ = current_layout;
 
             // First run without a key: open the popover so setup is obvious.
-            if first.needs_setup {
+            // A debug launch can open the same real popover for WebDriver,
+            // without depending on a desktop shell exposing the tray icon.
+            if first.needs_setup
+                || (cfg!(debug_assertions) && std::env::args().any(|arg| arg == "--show-popover"))
+            {
                 show_popover(&handle, None);
             }
             Ok(())

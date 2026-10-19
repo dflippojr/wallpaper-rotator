@@ -181,6 +181,26 @@ For an installable bundle (`.app`/`.dmg`, `.msi`, `.deb`), install the Tauri CLI
 
 The headless CLI is handy for testing: `cargo run -p rotator-core --bin wallpaper-rotator-cli -- rotate` (also `status`, `cleanup`, `displays`, `paths`). Use `rotate --dry-run` to print `would set <layout>` instead of applying the desktop wallpaper; it still fetches photos and updates the state and cache. `ROTATOR_SIZE=320x200` overrides the detected display size. Set `WALLPAPER_ROTATOR_HOME` to a separate root to keep the CLI and tray app's config, state, log, images and default favorites there (`paths` prints all five paths). Don't run `rotate`, including a dry run, while the tray app manages the same root.
 
+### Popover and real-app checks
+
+The committed popover suite runs `npx playwright test --workers=1` after
+`npm ci` and `npx playwright install --with-deps chromium webkit` (Node.js 22+).
+It checks the actual UI at 340 by 452 with recorded fake Tauri IPC in Chromium
+and WebKit, in light and dark modes.
+
+`npm run test:app` drives the real debug tray app through `tauri-driver`,
+opens the popover and clicks Refresh using only bundled synthetic favorites in
+a temporary home. **It changes the desktop wallpaper**; quit your tray app and
+use a disposable session. The journey checks changed live state/CLI status and
+error-free app logs. Until the independent OS read-back helper in #14 lands,
+CLI status is the allowed fallback and does not prove OS read-back.
+
+Direct `tauri-driver` supports Windows (matching Edge WebDriver) and Linux
+(WebKitWebDriver under Xvfb), **not macOS**. Playwright WebKit tests are renderer
+checks and do not verify the native Mac app. Both suites are required CI jobs.
+See [AGENTS.md](AGENTS.md#popover-and-real-app-journeys) for complete build, driver,
+Windows/Linux commands, diagnostic artifacts and the deliberate-break proof.
+
 ### Photo sources against the real APIs
 
 The source tests parse replies recorded from the real APIs, in `crates/core/tests/fixtures/sources/`. To record them again:
