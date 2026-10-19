@@ -113,10 +113,13 @@ pub fn call_within<T: Send + 'static>(
     }
 }
 
-/// Asks the OS for what the desktop shows until `attempt` says it matches,
-/// for up to `limit`: the shell may apply a new wallpaper after the call
-/// returns. Each attempt gets `attempt_limit` and is expected to enforce it;
-/// one that stalls ends the wait at once.
+/// Asks the OS for what the desktop shows until `attempt` says it matches:
+/// the shell may apply a new wallpaper after the call returns. A wrong
+/// answer is retried until `limit` has passed, checked between attempts, so
+/// this is a retry window and not a wall-clock bound: the last attempt may
+/// run for up to `attempt_limit` more, and an attempt that can't be
+/// abandoned (macOS) may take longer still. Each attempt is expected to
+/// enforce `attempt_limit`; one that stalls ends the wait at once.
 pub fn read_back_with(
     limit: Duration,
     attempt_limit: Duration,
@@ -136,7 +139,7 @@ pub fn read_back_with(
             Err(e) if e.is::<Stalled>() => return Err(e),
             Err(e) if start.elapsed() > limit => {
                 return Err(e.context(format!(
-                    "still wrong after {} s; {}",
+                    "still wrong after retrying for {} s (a retry window checked between attempts); {}",
                     limit.as_secs(),
                     diagnose()
                 )));
