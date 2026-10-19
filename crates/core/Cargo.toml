@@ -42,3 +42,12 @@ objc2-foundation = "0.3"
 
 [dev-dependencies]
 tempfile = "3"
+
+[target.'cfg(windows)'.dev-dependencies]
+windows = { version = "0.62", features = ["Win32_System_Com", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+
+# Changes the real desktop, so it skips itself unless ROTATOR_OS_TESTS=1.
+# No libtest harness: macOS wallpaper calls must run on the main thread.
+[[test]]
+name = "os_wallpaper"
+harness = false

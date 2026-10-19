@@ -131,6 +131,59 @@ jobs:
           name: real-app-results-${{ matrix.os }}
           path: target/real-app-results
 
+  # Sets the wallpaper with the app's own setter on a real desktop and reads
+  # it back from the OS, then checks a screenshot of the desktop
+  # (crates/core/tests/os_wallpaper.rs). GNOME runs headless under
+  # scripts/os-wallpaper-gnome.sh. The coverage of the platform setters goes
+  # to the job summary; the floor above is measured by `test` only.
+  os-wallpaper:
+    name: os-wallpaper (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      ROTATOR_OS_TESTS: "1"
+      ROTATOR_OS_TESTS_SCREENSHOT: "1"
+      ROTATOR_OS_TESTS_OUT: ${{ github.workspace }}/os-wallpaper-out
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-llvm-cov
+      - name: Install GNOME Shell
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gnome-shell gsettings-desktop-schemas dconf-gsettings-backend dconf-service
+      - name: Set and read back the wallpaper
+        shell: bash
+        run: |
+          run=(cargo llvm-cov -p rotator-core --test os_wallpaper --no-report)
+          if [ "$RUNNER_OS" = Linux ]; then
+            scripts/os-wallpaper-gnome.sh "${run[@]}"
+          else
+            "${run[@]}"
+          fi
+      - name: Coverage of the platform setters
+        shell: bash
+        run: |
+          cargo llvm-cov report --summary-only | grep -E '^(Filename|TOTAL)|wallpaper[/\]' | tee coverage.txt
+          { printf '### Coverage from the OS wallpaper tests\n\n```\n'; cat coverage.txt; printf '```\n'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep the screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: os-wallpaper-${{ matrix.os }}
+          path: os-wallpaper-out
+          if-no-files-found: ignore
+
   installers:
     runs-on: ubuntu-24.04
     steps:
@@ -184,7 +237,7 @@ jobs:
   # cancelled or skipped job fails the gate).
   gate:
     if: always()
-    needs: [test, installers, installer-windows, gate-guard, popover, real-app]
+    needs: [test, os-wallpaper, installers, installer-windows, gate-guard, popover, real-app]
     runs-on: ubuntu-24.04
     steps:
       - name: Every job passed
