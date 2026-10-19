@@ -118,6 +118,15 @@ $env:NATIVE_WEBDRIVER = (Resolve-Path target/e2e-tools/edge/msedgedriver.exe).Pa
 npm run test:app
 ```
 
+WebView2 Runtime 150+ ignores environment overrides in elevated processes,
+including GitHub-hosted Windows runners. For debug Windows builds with
+TAURI_WEBVIEW_AUTOMATION=true (set by tauri-driver), the app passes the driver's
+WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS and WEBVIEW2_USER_DATA_FOLDER through
+Tauri's window configuration to the WebView2 API before creating the window.
+This keeps the driver-selected debugging port and isolated browser profile
+working on those runners. Ordinary launches and release builds do not enable
+this bridge. See MicrosoftEdge/WebView2Feedback#5645 and tauri-apps/wry#1782.
+
 On Ubuntu 24.04, install the normal Tauri build libraries plus
 webkit2gtk-driver, xvfb, dbus-x11 and gsettings-desktop-schemas, then run
 `dbus-run-session -- xvfb-run -a npm run test:app`. tauri-driver must be on PATH;
