@@ -1,0 +1,57 @@
+{
+  "current": [
+    {
+      "id": "synthetic-0",
+      "author": "Fixture artist",
+      "author_url": "",
+      "photo_url": "",
+      "preview_url": "",
+      "preview_file": "fixture.png",
+      "location": "Synthetic landscape",
+      "description": "Solid color test image",
+      "color": "#4d4d52",
+      "display": "Built-in",
+      "source": "Favorites"
+    },
+    {
+      "id": "synthetic-1",
+      "author": "Fixture artist",
+      "author_url": "",
+      "photo_url": "",
+      "preview_url": "",
+      "preview_file": "fixture.png",
+      "location": "Synthetic landscape",
+      "description": "Solid color test image",
+      "color": "#4d4d52",
+      "display": "External",
+      "source": "Favorites"
+    }
+  ],
+  "busy": false,
+  "error": null,
+  "notice": null,
+  "needs_setup": false,
+  "has_unsplash_key": true,
+  "has_pexels_key": true,
+  "settings": {
+    "sources": [
+      "unsplash",
+      "pexels",
+      "wallhaven",
+      "daily",
+      "favorites"
+    ],
+    "query": "mountains",
+    "topics": "wallpapers, nature",
+    "collections": "12345",
+    "username": "fixture-artist",
+    "interval_minutes": 60,
+    "paused": false,
+    "cache_cap_mb": 200,
+    "start_at_login": false,
+    "per_display": true
+  },
+  "photographer_note": "Search is set, so the photographer is not used.",
+  "next_rotation_at": null,
+  "favorites_dir": "synthetic-favorites"
+}

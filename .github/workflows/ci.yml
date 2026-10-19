@@ -21,11 +21,11 @@ permissions:
 
 env:
   # Minimum line coverage (percent) for `cargo llvm-cov --workspace` on Linux.
-  # Set to the measured total minus 1 point (81.04% on 2026-10-18). The floor
+  # Set to the measured total minus 1 point (84.07% on 2026-10-19). The floor
   # only goes up: raise it when coverage rises, never lower it to get a PR
   # through.
   # scripts/check.sh reads this value.
-  COVERAGE_FLOOR: 80.1
+  COVERAGE_FLOOR: 83.07
 
 jobs:
   test:
@@ -67,6 +67,69 @@ jobs:
           total=$(cargo llvm-cov report --json --summary-only | jq '.data[0].totals.lines.percent')
           printf '### Coverage\n\nLine coverage: **%.2f%%** (floor %s%%)\n' "$total" "$COVERAGE_FLOOR" >> "$GITHUB_STEP_SUMMARY"
           cargo llvm-cov report --summary-only --fail-under-lines "$COVERAGE_FLOOR" > /dev/null
+
+  popover:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium webkit
+      - run: npx playwright test --workers=1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: popover-results
+          path: |
+            target/popover-results
+            target/popover-report
+
+  real-app:
+    name: real-app (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      CARGO_BUILD_JOBS: 4
+      RUST_TEST_THREADS: 4
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install Linux build, WebDriver and desktop settings dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev libxdo-dev webkit2gtk-driver xvfb dbus-x11 gsettings-desktop-schemas
+      - run: npm ci
+      - name: Build the real debug app and CLI
+        run: cargo build --locked -p wallpaper-rotator -p rotator-core --bin wallpaper-rotator --bin wallpaper-rotator-cli -j 4
+      - name: Install tauri-driver
+        run: cargo install tauri-driver --version 2.1.0 --locked -j 4
+      - name: Install matching Edge WebDriver
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./app/tests/e2e/install-edge-driver.ps1
+      - name: Real app journey on Linux
+        if: runner.os == 'Linux'
+        run: dbus-run-session -- xvfb-run -a npm run test:app
+      - name: Real app journey on Windows
+        if: runner.os == 'Windows'
+        run: npm run test:app
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: real-app-results-${{ matrix.os }}
+          path: target/real-app-results
 
   # Sets the wallpaper with the app's own setter on a real desktop and reads
   # it back from the OS, then checks a screenshot of the desktop
@@ -174,7 +237,7 @@ jobs:
   # cancelled or skipped job fails the gate).
   gate:
     if: always()
-    needs: [test, os-wallpaper, installers, installer-windows, gate-guard]
+    needs: [test, os-wallpaper, installers, installer-windows, gate-guard, popover, real-app]
     runs-on: ubuntu-24.04
     steps:
       - name: Every job passed
