@@ -1,6 +1,9 @@
 // No console window on Windows release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg(any(all(windows, debug_assertions), test))]
+mod automation;
+
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
@@ -374,6 +377,19 @@ fn main() {
         }
     };
 
+    let context = tauri::generate_context!();
+    #[cfg(all(windows, debug_assertions))]
+    let context = {
+        let mut context = context;
+        automation::configure(
+            &mut context.config_mut().app.windows,
+            std::env::var("TAURI_WEBVIEW_AUTOMATION").as_deref() == Ok("true"),
+            std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").ok(),
+            std::env::var_os("WEBVIEW2_USER_DATA_FOLDER").map(PathBuf::from),
+        );
+        context
+    };
+
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_popover(app, None);
@@ -455,7 +471,11 @@ fn main() {
             let _ = current_layout;
 
             // First run without a key: open the popover so setup is obvious.
-            if first.needs_setup {
+            // A debug launch can open the same real popover for WebDriver,
+            // without depending on a desktop shell exposing the tray icon.
+            if first.needs_setup
+                || (cfg!(debug_assertions) && std::env::args().any(|arg| arg == "--show-popover"))
+            {
                 show_popover(&handle, None);
             }
             Ok(())
@@ -474,7 +494,7 @@ fn main() {
             }
             _ => {}
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building Wallpaper Rotator")
         .run(|_app, event| {
             // Closing the popover must not quit the tray app.

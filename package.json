@@ -1,0 +1,15 @@
+{
+  "name": "wallpaper-rotator-tests",
+  "private": true,
+  "scripts": {
+    "test:popover": "playwright test --workers=1",
+    "test:app": "node --test --test-concurrency=1 app/tests/e2e/journey.test.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1",
+    "selenium-webdriver": "4.51.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

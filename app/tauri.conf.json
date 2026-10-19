@@ -4,7 +4,11 @@
   "version": "0.3.2",
   "identifier": "dev.dflippojr.wallpaper-rotator",
   "build": {
-    "frontendDist": "../ui"
+    "frontendDist": [
+      "../ui/index.html",
+      "../ui/app.js",
+      "../ui/style.css"
+    ]
   },
   "app": {
     "withGlobalTauri": true,

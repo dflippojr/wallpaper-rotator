@@ -71,3 +71,88 @@ Tests deleted or skipped, or config loosened, with the reason. Empty if none.
 **Never claim an OS was verified unless you ran it there.** CI passing on `macos-latest` proves it compiles and the unit tests pass. It doesn't prove the wallpaper changed on a Mac.
 
 After you push fix commits to a PR, re-run the automated review on its head: `gh workflow run review.yml -f pr_number=<PR> -f mode=full`.
+
+## Popover and real-app journeys
+
+Install Node.js 22+ and run these from the repository root:
+
+```sh
+npm ci
+npx playwright install --with-deps chromium webkit
+npx playwright test --workers=1
+```
+
+The committed tests in ui/tests load the actual UI with a recorded fake Tauri
+object that logs every invoke. They run at 340 by 452 in Chromium and WebKit, in
+light and dark modes: all settings sections must fit, Refresh must target the
+shown display, Save must send the full edited payload, and console/page errors
+fail each test. Reports, screenshots and traces go under target/popover-*.
+Do not add retries. For the issue #17 mutation proof, temporarily replace the
+next_wallpaper index expression in ui/app.js with 0, then run
+`npx playwright test --workers=1 --grep "Refresh sends the shown"`. It must fail
+when External is shown (expected 1, received 0). Restore app.js and run the full
+suite again; keep the failing output with the PR proof.
+
+The app/tests/e2e journey uses tauri-driver and the real debug app, with no mocked
+IPC. Quit any running tray app first. It uses a fresh temporary
+WALLPAPER_ROTATOR_HOME, copies the three bundled synthetic PNGs into favorites,
+and selects only that source with automatic rotation/login disabled. The app
+opens its normal popover through the debug-only --show-popover launch argument,
+then WebDriver clicks Refresh. This journey actually changes the desktop
+wallpaper; use a disposable desktop/session. It checks that both the live app
+and CLI status report a different current photo, the preview loads, and the app
+log has no errors. Before and after Refresh it independently confirms the desktop
+through the shared OS read-back helper in crates/core/tests/common/os_wallpaper.rs:
+Windows GetWallpaper/SPI_GETDESKWALLPAPER decode the OS-named file's pixels;
+GNOME checks both picture URIs and picture-options. It never runs CLI rotate
+alongside the app. The journey builds the os-wallpaper-probe Cargo example
+automatically (with four build jobs); its JSON-lines process saves the original
+background before app launch and restores it on EOF after the app exits, even
+when an assertion fails. Restoration failure fails the journey.
+
+Build/install prerequisites:
+
+```sh
+cargo build --locked -p wallpaper-rotator -p rotator-core --bin wallpaper-rotator --bin wallpaper-rotator-cli -j 4
+cargo install tauri-driver --version 2.1.0 --locked -j 4
+```
+
+On Windows, MSVC C++ Build Tools and WebView2 must be installed. Run:
+
+```powershell
+./app/tests/e2e/install-edge-driver.ps1
+$env:NATIVE_WEBDRIVER = (Resolve-Path target/e2e-tools/edge/msedgedriver.exe).Path
+npm run test:app
+```
+
+WebView2 Runtime 150+ ignores environment overrides in elevated processes,
+including GitHub-hosted Windows runners. For debug Windows builds with
+TAURI_WEBVIEW_AUTOMATION=true (set by tauri-driver), the app passes the driver's
+WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS through Tauri's window configuration to
+the WebView2 API before creating the window. This enables the driver-selected
+debugging port on those runners. Ordinary launches and release builds do not
+enable this bridge. See MicrosoftEdge/WebView2Feedback#5645 and tauri-apps/wry#1782.
+
+The driver also supplies WEBVIEW2_USER_DATA_FOLDER. The app copies it into
+window configuration, but the pinned Tauri runtime does not propagate that
+field into effective webview attributes. The configuration unit test checks
+that copy only; it does not prove API-level browser profile isolation. The
+real journey's WALLPAPER_ROTATOR_HOME isolation is asserted independently.
+
+On Ubuntu 24.04, install the normal Tauri build libraries plus
+webkit2gtk-driver, xvfb, dbus-x11 and gsettings-desktop-schemas, then run
+`dbus-run-session -- xvfb-run -a npm run test:app`. tauri-driver must be on PATH;
+TAURI_DRIVER can instead name its absolute path. E2E_BINARY_DIR can select a
+different debug binary directory. Run one journey at a time (ports 4444/4445).
+
+Diagnostics (before/after OS read-back JSON and CLI status, snapshots, screenshot,
+app/driver logs and the OS probe's restoration acknowledgement)
+are kept in target/real-app-results and uploaded by CI. The temporary home is
+retained so the current wallpaper file stays present. The journey tears down
+its own driver/app processes. The OS read-back and restore implementation is
+shared with the original opt-in os_wallpaper harness; its setter, screenshot and restoration cases remain intact.
+CLI status is additional evidence, not the OS verification. Direct tauri-driver
+does not support macOS.
+
+CI's popover and real-app jobs are required by gate alongside the existing
+jobs. The real-app matrix uses GitHub-hosted ubuntu-24.04 and windows-latest.

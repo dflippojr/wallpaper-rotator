@@ -4,3 +4,6 @@
 /app/gen
 /dist
 /app/binaries
+/node_modules
+/.pr-body.md
+/.dispatch-task.md
