@@ -78,6 +78,11 @@ pub fn displays() -> Option<Vec<Display>> {
 }
 
 pub fn set(layout: &Layout) -> Result<()> {
+    // TEMP red proof for PR #25 finding 2: a setter that does nothing must turn os-wallpaper red.
+    if true {
+        let _ = layout;
+        return Ok(());
+    }
     #[cfg(windows)]
     return windows::set(layout);
     #[cfg(target_os = "macos")]
