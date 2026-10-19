@@ -147,7 +147,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y xvfb xauth dbus-x11 trayer libwebkit2gtk-4.1-0 libayatana-appindicator3-1 libxdo3
+          sudo apt-get install -y xvfb xauth dbus-x11 at-spi2-core trayer libwebkit2gtk-4.1-0 libayatana-appindicator3-1 libxdo3
       - name: Smoke installed app (Linux)
         if: runner.os == 'Linux'
         env:
