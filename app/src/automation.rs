@@ -35,7 +35,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn webdriver_arguments_and_profile_reach_every_webview() {
+    fn webdriver_arguments_and_profile_update_every_window_config() {
         let mut windows = [WindowConfig::default(), WindowConfig::default()];
         let profile = PathBuf::from("isolated webdriver profile");
         configure(

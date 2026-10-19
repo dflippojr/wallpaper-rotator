@@ -191,9 +191,10 @@ and WebKit, in light and dark modes.
 `npm run test:app` drives the real debug tray app through `tauri-driver`,
 opens the popover and clicks Refresh using only bundled synthetic favorites in
 a temporary home. **It changes the desktop wallpaper**; quit your tray app and
-use a disposable session. The journey checks changed live state/CLI status and
-error-free app logs. Until the independent OS read-back helper in #14 lands,
-CLI status is the allowed fallback and does not prove OS read-back.
+use a disposable session. The journey reuses the OS read-back helper from the
+opt-in wallpaper tests to confirm the initial and refreshed photos independently of app state, checks
+live state/CLI status and error-free app logs, then restores the original
+wallpaper after the app exits (including on assertion failures).
 
 Direct `tauri-driver` supports Windows (matching Edge WebDriver) and Linux
 (WebKitWebDriver under Xvfb), **not macOS**. Playwright WebKit tests are renderer

@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { once } from 'node:events';
+import { createInterface } from 'node:readline';
 import { access, copyFile, cp, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -39,7 +40,66 @@ async function stopDriver(child) {
   await stopped;
 }
 
-test('real popover Refresh changes the photo through Tauri and the worker', { timeout: 120000 }, async () => {
+// Compile an example using dev dependencies, so the desktop probe stays out of
+// installed app/CLI binaries. Cargo reports its path even with a custom target dir.
+async function buildProbe() {
+  const built = await exec('cargo', [
+    'build', '--locked', '-p', 'rotator-core', '--example', 'os-wallpaper-probe',
+    '-j', '4', '--message-format=json',
+  ], { cwd: root, timeout: 180000, maxBuffer: 8 * 1024 * 1024 });
+  const artifacts = built.stdout.trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+  const binary = artifacts.find(item => item.reason === 'compiler-artifact' && item.target.name === 'os-wallpaper-probe')?.executable;
+  assert.ok(binary, 'Cargo reported the OS probe executable');
+  return binary;
+}
+
+function startProbe(binary) {
+  let log = '';
+  let launchError;
+  const child = spawn(binary, [], { cwd: root, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+  child.on('error', error => { launchError = error; });
+  child.stdin.on('error', error => { launchError = error; });
+  child.stderr.on('data', bytes => { log += bytes; });
+  const exited = new Promise(resolve => child.once('close', code => resolve(code)));
+  const lines = createInterface({ input: child.stdout })[Symbol.asyncIterator]();
+  const response = async () => {
+    const abort = new AbortController();
+    try {
+      const next = await Promise.race([
+        lines.next(),
+        delay(20000, null, { signal: abort.signal }).then(() => { throw new Error('OS probe timed out: ' + log); }),
+      ]);
+      if (launchError) throw launchError;
+      assert.ok(!next.done, 'OS probe closed unexpectedly: ' + log);
+      log += next.value + '\n';
+      return JSON.parse(next.value);
+    } finally { abort.abort(); }
+  };
+  return {
+    ready: async () => assert.equal((await response()).ready, true, 'original wallpaper saved before app launch'),
+    verify: async (photo, phase) => {
+      assert.match(photo.id, /^fav-(red|green|blue)$/, 'expected a bundled synthetic photo');
+      child.stdin.write(JSON.stringify({ command: 'verify', file: photo.preview_file, colour: photo.id.slice(4) }) + '\n');
+      const result = await response();
+      await writeFile(path.join(output, phase + '-os-wallpaper.json'), JSON.stringify(result, null, 2));
+      assert.equal(result.ok, true, 'independent OS read-back: ' + result.error);
+      console.log(phase + ' OS wallpaper: ' + result.evidence);
+      return result.evidence;
+    },
+    restore: async () => {
+      // EOF restores even when a verification failed. The tray must exit first.
+      child.stdin.end();
+      try {
+        assert.equal((await response()).restored, true, 'original wallpaper restored');
+        assert.equal(await exited, 0, 'OS probe exit: ' + log);
+      } finally {
+        await writeFile(path.join(output, 'os-wallpaper-probe.log'), log);
+      }
+    },
+  };
+}
+
+test('real popover Refresh changes the photo through Tauri and the worker', { timeout: 240000 }, async () => {
   assert.ok(['win32', 'linux'].includes(process.platform), 'tauri-driver supports Windows and Linux, not macOS');
   const app = path.join(binaryDir, 'wallpaper-rotator' + suffix);
   const cli = path.join(binaryDir, 'wallpaper-rotator-cli' + suffix);
@@ -64,18 +124,21 @@ test('real popover Refresh changes the photo through Tauri and the worker', { ti
   let driverLog = '';
   let launchError;
   let browser;
-  const driver = spawn(process.env.TAURI_DRIVER || 'tauri-driver', driverArgs, {
-    cwd: root, env, windowsHide: true, detached: !windows, stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  driver.on('error', error => { launchError = error; });
-  driver.stdout.on('data', bytes => { driverLog += bytes; });
-  driver.stderr.on('data', bytes => { driverLog += bytes; });
+  const probe = startProbe(await buildProbe());
+  let driver;
   const status = async () => (await exec(cli, ['status'], { env, timeout: 10000 })).stdout;
   const snapshot = () => browser.executeAsyncScript(function () {
     const done = arguments[arguments.length - 1];
     window.__TAURI__.core.invoke('get_state').then(done, error => done({ ipcError: String(error) }));
   });
   try {
+    await probe.ready();
+    driver = spawn(process.env.TAURI_DRIVER || 'tauri-driver', driverArgs, {
+      cwd: root, env, windowsHide: true, detached: !windows, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    driver.on('error', error => { launchError = error; });
+    driver.stdout.on('data', bytes => { driverLog += bytes; });
+    driver.stderr.on('data', bytes => { driverLog += bytes; });
     await waitFor(async () => {
       if (launchError) throw launchError;
       assert.equal(driver.exitCode, null, 'tauri-driver exited: ' + driverLog);
@@ -102,6 +165,7 @@ test('real popover Refresh changes the photo through Tauri and the worker', { ti
     const beforeStatus = await status();
     assert.match(beforeStatus, /^current: (?!none)/m);
     await writeFile(path.join(output, 'before-status.txt'), beforeStatus);
+    const beforeOS = await probe.verify(before.current[0], 'before');
     // This is a native WebDriver click on the real button. No IPC is mocked.
     await refresh.click();
     const after = await waitFor(async () => {
@@ -110,6 +174,8 @@ test('real popover Refresh changes the photo through Tauri and the worker', { ti
       assert.equal(state.error, null, 'Refresh app error');
       return !state.busy && state.current[0]?.id !== before.current[0].id && state.current.length > 0 && state;
     }, 'Refresh to finish with a different photo');
+    const afterOS = await probe.verify(after.current[0], 'after');
+    assert.notEqual(afterOS, beforeOS, 'OS wallpaper changed after Refresh');
     const afterStatus = await status();
     assert.match(afterStatus, /^current: (?!none)/m);
     assert.notEqual(after.current[0].preview_file, before.current[0].preview_file, 'cached photo path changed');
@@ -122,7 +188,7 @@ test('real popover Refresh changes the photo through Tauri and the worker', { ti
     await writeFile(path.join(output, 'snapshots.json'), JSON.stringify({ before, after }, null, 2));
     await writeFile(path.join(output, 'popover.png'), await browser.takeScreenshot(), 'base64');
     console.log('Refresh changed ' + before.current[0].id + ' -> ' + after.current[0].id);
-    console.log('CLI status fallback verified; independent OS read-back is not yet available (#14).');
+    console.log('Independent OS read-back verified before and after Refresh.');
     console.log('Isolated home retained at ' + home);
   } finally {
     try {
@@ -142,8 +208,12 @@ test('real popover Refresh changes the photo through Tauri and the worker', { ti
           await browser.quit().catch(() => {});
         }
       } finally {
-        await stopDriver(driver);
-        await writeFile(path.join(output, 'driver.log'), driverLog);
+        try {
+          await stopDriver(driver);
+          await writeFile(path.join(output, 'driver.log'), driverLog);
+        } finally {
+          await probe.restore();
+        }
       }
     }
   }
