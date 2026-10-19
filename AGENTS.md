@@ -121,11 +121,16 @@ npm run test:app
 WebView2 Runtime 150+ ignores environment overrides in elevated processes,
 including GitHub-hosted Windows runners. For debug Windows builds with
 TAURI_WEBVIEW_AUTOMATION=true (set by tauri-driver), the app passes the driver's
-WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS and WEBVIEW2_USER_DATA_FOLDER through
-Tauri's window configuration to the WebView2 API before creating the window.
-This keeps the driver-selected debugging port and isolated browser profile
-working on those runners. Ordinary launches and release builds do not enable
-this bridge. See MicrosoftEdge/WebView2Feedback#5645 and tauri-apps/wry#1782.
+WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS through Tauri's window configuration to
+the WebView2 API before creating the window. This enables the driver-selected
+debugging port on those runners. Ordinary launches and release builds do not
+enable this bridge. See MicrosoftEdge/WebView2Feedback#5645 and tauri-apps/wry#1782.
+
+The driver also supplies WEBVIEW2_USER_DATA_FOLDER. The app copies it into
+window configuration, but the pinned Tauri runtime does not propagate that
+field into effective webview attributes. The configuration unit test checks
+that copy only; it does not prove API-level browser profile isolation. The
+real journey's WALLPAPER_ROTATOR_HOME isolation is asserted independently.
 
 On Ubuntu 24.04, install the normal Tauri build libraries plus
 webkit2gtk-driver, xvfb, dbus-x11 and gsettings-desktop-schemas, then run
