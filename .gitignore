@@ -3,3 +3,6 @@
 .DS_Store
 /app/gen
 /dist
+/node_modules
+/.pr-body.md
+/.dispatch-task.md
