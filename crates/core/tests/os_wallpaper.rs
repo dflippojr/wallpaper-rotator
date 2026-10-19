@@ -324,6 +324,8 @@ fn cases(run: &mut Run) -> Result<()> {
             "reconcile is a no-op off macOS"
         );
     }
+    #[cfg(windows)]
+    os::restoration_cases(run, &red, &blue)?;
     Ok(())
 }
 
@@ -645,6 +647,74 @@ mod os {
             for (id, file) in saved.monitors.iter().filter(|(_, f)| !f.is_empty()) {
                 desktop.SetWallpaper(&HSTRING::from(id.as_str()), &HSTRING::from(file.as_str()))?;
             }
+        }
+        Ok(())
+    }
+
+    /// Round-trip both image and no-image starting states through save/restore.
+    /// This stays inside the desktop-changing opt-in target, on the main thread.
+    pub fn restoration_cases(run: &mut Run, red: &Path, blue: &Path) -> Result<()> {
+        let desktop = desktop()?;
+        let displays = wallpaper::displays()?;
+        for case in ["restore-image", "restore-solid", "restore-mixed"] {
+            if case == "restore-mixed" && displays.len() < 2 {
+                println!("  restore-mixed: not run (needs two attached monitors)");
+                continue;
+            }
+            wallpaper::set(&Layout::Same(red.to_path_buf()))?;
+            read_back(&Layout::Same(red.to_path_buf()), Colour::Red)?;
+            for (i, display) in displays.iter().enumerate() {
+                if case == "restore-solid" || (case == "restore-mixed" && i % 2 == 0) {
+                    unsafe {
+                        desktop
+                            .SetWallpaper(&HSTRING::from(display.id.as_str()), &HSTRING::new())?;
+                    }
+                    ensure!(
+                        wallpaper_of(&desktop, &display.id)?.is_empty(),
+                        "{case}: could not establish a no-image starting state"
+                    );
+                }
+            }
+            let saved = save()?;
+            let expected = saved.monitors.clone();
+            let position = saved.position;
+            let background = unsafe { desktop.GetBackgroundColor()? };
+            wallpaper::set(&Layout::Same(blue.to_path_buf()))?;
+            read_back(&Layout::Same(blue.to_path_buf()), Colour::Blue)?;
+            restore(saved)?;
+
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                let actual = save()?;
+                if actual.monitors == expected {
+                    ensure!(
+                        actual.position == position,
+                        "{case}: position was not restored"
+                    );
+                    ensure!(
+                        unsafe { desktop.GetBackgroundColor()? } == background,
+                        "{case}: background colour changed"
+                    );
+                    break;
+                }
+                ensure!(
+                    Instant::now() < deadline,
+                    "{case}: restoration mismatch: expected {expected:?}, got {:?}",
+                    actual.monitors
+                );
+                sleep(Duration::from_millis(250));
+            }
+            let says = format!(
+                "{} monitor(s): image/no-image paths, position and background colour match the saved state",
+                expected.len()
+            );
+            println!("  {case}: {says}");
+            run.rows.push(Row {
+                case,
+                want: "Original background".into(),
+                os_says: says,
+                screen: "not run".into(),
+            });
         }
         Ok(())
     }
