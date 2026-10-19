@@ -89,7 +89,7 @@ exercise() {
   "$cli" status | tee "$evidence/$kind-status.txt"
   inspect_log
   stop_app
-  bash "$root/install.sh" --uninstall --purge |& tee "$evidence/$kind-uninstall.txt"
+  bash "$root/install.sh" --uninstall --purge 2>&1 | tee "$evidence/$kind-uninstall.txt"
   for path in "$config" "$state" "$images" "$log" "$favorites"; do absent "$path"; done
   absent "$app"
   absent "$cli"
