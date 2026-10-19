@@ -227,9 +227,9 @@ jobs:
   # gate-guard-target.yml, which runs from main and posts the gate-guard check
   # the ruleset requires.
   gate-guard:
-    uses: dflippojr/.github/.github/workflows/gate-guard.yml@e2c7fae8508be0359f3abaf136caade46ee7479c
+    uses: dflippojr/.github/.github/workflows/gate-guard.yml@882623c67a5c3bab64da2136e6070a5325440b47
     with:
-      guard-ref: e2c7fae8508be0359f3abaf136caade46ee7479c
+      guard-ref: 882623c67a5c3bab64da2136e6070a5325440b47
       require-owner-label-actor: true
 
   # The check a ruleset requires, with gate-guard from gate-guard-target.yml.
