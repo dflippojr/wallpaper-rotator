@@ -655,7 +655,7 @@ mod os {
     /// This stays inside the desktop-changing opt-in target, on the main thread.
     pub fn restoration_cases(run: &mut Run, red: &Path, blue: &Path) -> Result<()> {
         let desktop = desktop()?;
-        let displays = wallpaper::displays()?;
+        let displays = wallpaper::displays().context("no displays")?;
         for case in ["restore-image", "restore-solid", "restore-mixed"] {
             if case == "restore-mixed" && displays.len() < 2 {
                 println!("  restore-mixed: not run (needs two attached monitors)");
