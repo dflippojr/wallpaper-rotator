@@ -481,11 +481,20 @@ fn main() -> ExitCode {
         scratch: os::resolve(scratch.path()),
     };
 
-    let saved = os::save();
-    let result = cases(&mut run);
-    match saved.and_then(os::restore) {
+    let saved = match os::save() {
+        Ok(saved) => saved,
+        Err(e) => {
+            println!("os_wallpaper: FAILED: could not save the original wallpaper: {e:#}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut result = cases(&mut run);
+    match os::restore(saved) {
         Ok(()) => println!("  restored the original wallpaper"),
-        Err(e) => println!("  could not restore the original wallpaper: {e:#}"),
+        Err(e) => {
+            println!("  could not restore the original wallpaper: {e:#}");
+            result = Err(e.context("could not restore the original wallpaper"));
+        }
     }
 
     let md = summary(&run, &result);
@@ -621,6 +630,7 @@ mod os {
         out
     }
 
+    #[derive(Debug, PartialEq)]
     pub struct Saved {
         position: DESKTOP_WALLPAPER_POSITION,
         monitors: Vec<(String, String)>,
@@ -629,7 +639,7 @@ mod os {
     pub fn save() -> Result<Saved> {
         let desktop = desktop()?;
         let monitors = wallpaper::displays()
-            .unwrap_or_default()
+            .context("could not save Windows displays")?
             .into_iter()
             .map(|d| Ok((wallpaper_of(&desktop, &d.id)?, d.id)))
             .map(|r: Result<(String, String)>| r.map(|(file, id)| (id, file)))
@@ -644,11 +654,26 @@ mod os {
         let desktop = desktop()?;
         unsafe {
             desktop.SetPosition(saved.position)?;
-            for (id, file) in saved.monitors.iter().filter(|(_, f)| !f.is_empty()) {
+            // An empty path is a saved no-image/solid-colour background.
+            // SetWallpaper with an empty path clears that monitor's test image.
+            for (id, file) in &saved.monitors {
                 desktop.SetWallpaper(&HSTRING::from(id.as_str()), &HSTRING::from(file.as_str()))?;
             }
         }
-        Ok(())
+        // The shell applies changes asynchronously. Do not claim restoration
+        // succeeded while a monitor still names one of our temporary fixtures.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let actual = save()?;
+            if actual == saved {
+                return Ok(());
+            }
+            ensure!(
+                Instant::now() < deadline,
+                "Windows restoration mismatch: expected {saved:?}, got {actual:?}"
+            );
+            sleep(Duration::from_millis(250));
+        }
     }
 
     /// Round-trip both image and no-image starting states through save/restore.
