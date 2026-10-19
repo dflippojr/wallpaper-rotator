@@ -126,7 +126,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Lint the shell scripts
-        run: shellcheck -S warning install.sh scripts/build-release.sh
+        run: shellcheck -S warning install.sh scripts/build-release.sh scripts/prepare-bundle-cli.sh scripts/smoke-installed.sh
       - name: Dry-run install.sh
         env:
           XDG_CURRENT_DESKTOP: ubuntu:GNOME
@@ -147,6 +147,8 @@ jobs:
         run: |
           $errors = $null
           [System.Management.Automation.Language.Parser]::ParseFile("$PWD\install.ps1", [ref]$null, [ref]$errors) | Out-Null
+          if ($errors) { $errors | ForEach-Object { $_.ToString() }; exit 1 }
+          [System.Management.Automation.Language.Parser]::ParseFile("$PWD\scripts\smoke-installed.ps1", [ref]$null, [ref]$errors) | Out-Null
           if ($errors) { $errors | ForEach-Object { $_.ToString() }; exit 1 }
           .\install.ps1 -DryRun
           .\install.ps1 -Uninstall -Purge -DryRun

@@ -209,9 +209,15 @@ The installers fetch the files attached to the latest GitHub release. To publish
    - a universal `.dmg`
    - the Windows setup `.exe`
 
-   Then it publishes the release.
+   Fresh hosted Ubuntu, macOS and Windows runners install those draft assets, launch the app for 20 seconds without API keys, run the bundled CLI, inspect logs, and uninstall with purge. Linux checks the .deb and AppImage independently. A failed build or smoke leaves the release in draft; publication depends on both. Each OS uploads CLI, launch and purge evidence.
 
 To build the installers by hand instead, use `scripts/build-release.sh linux|windows|macos`. Linux and Windows build in Docker (Windows is cross-built, so no MSVC is needed); the macOS build runs on a Mac. Then publish with `gh release create vX.Y.Z dist/*`.
+
+The same **Release** workflow builds fresh installers weekly from `main` and on manual dispatch without publishing. A weekly failure opens or updates a `bug` issue with the run link. Manual dispatch accepts `fail_smoke_os` for an intentional negative check: select one OS to prove that a failed smoke skips `publish`, then dispatch again with `none`. The smoke job timeout is 15 minutes per OS.
+
+The standalone smoke scripts are destructive: run them only on a fresh disposable VM. They refuse machines outside hosted runners unless `SMOKE_DISPOSABLE=1` is explicitly set. Never run them on your desktop or the owner's MacBook. On Linux run `xvfb-run -a dbus-run-session -- bash scripts/smoke-installed.sh dist`; on a disposable Mac run `bash scripts/smoke-installed.sh dist`; on Windows use `powershell -ExecutionPolicy Bypass -File scripts/smoke-installed.ps1 -Assets dist`. The machine needs no API keys and must have no existing app/config. The default favorites path must stay absent; existing favorites are never purged. A fresh no-key startup may produce no application log, which the evidence records explicitly.
+
+Release builds use `scripts/prepare-bundle-cli.sh` and `app/tauri.bundle.conf.json` to include the CLI as a Tauri sidecar. `scripts/build-release.sh` does both automatically; the normal development configuration does not require a prebuilt sidecar.
 
 ### Branch ruleset
 
