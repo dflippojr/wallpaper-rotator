@@ -9,7 +9,21 @@
 //!
 //! Every check sets a pure red photo and reads it back, then a pure blue
 //! one, so a setter that does nothing (or a desktop that was already red)
-//! can't pass. The original wallpaper is put back afterwards, best effort.
+//! can't pass. The original wallpaper is put back afterwards, and the run
+//! fails unless the OS then reports exactly what it reported before.
+//!
+//! The `stalled-call` case changes the desktop and then makes a call stall
+//! (a child process that sleeps, standing in for a hung OS call). It must
+//! fail in bounded time, and the restoration check above then proves the
+//! original wallpaper came back anyway.
+//!
+//! Time limits (details in `common/os_wallpaper.rs`): helper subprocesses
+//! are killed after 30 s; on Windows and GNOME a stuck read-back attempt is
+//! abandoned after 30 s. The 10 s and 20 s polling limits only bound how long
+//! a wrong answer is retried, between calls, and are not wall-clock bounds.
+//! Not bounded at all: macOS AppKit calls (main thread only), and on every OS
+//! the app's own setter and the save and restore calls, so a hang there still
+//! runs into the CI job timeout.
 //!
 //! Read-back per OS:
 //! - Windows: `IDesktopWallpaper::GetWallpaper` per monitor and
@@ -45,7 +59,8 @@ use rotator_core::wallpaper::{self, Display, Layout};
 #[path = "common/os_wallpaper.rs"]
 mod readback;
 use readback::{
-    decode, os, read_back, rgb, Colour, Region, Sample, DESKTOP, LEFT_HALF, MIN_SHARE, RIGHT_HALF,
+    decode, os, read_back, read_back_with, rgb, run_bounded, stall_command, stall_if_asked,
+    with_restoration, Colour, Region, Sample, Stalled, DESKTOP, LEFT_HALF, MIN_SHARE, RIGHT_HALF,
 };
 
 fn fixture(dir: &Path, name: &str, (w, h): (u32, u32), colour: Colour) -> Result<PathBuf> {
@@ -156,6 +171,7 @@ fn cases(run: &mut Run) -> Result<()> {
     let blue = fixture(&dir, "blue.png", size, Colour::Blue)?;
 
     run.red_then_blue("same", |f| Layout::Same(f.to_path_buf()), &red, &blue)?;
+    stalled_call(run, &red)?;
 
     if wallpaper::SPANS_ONE_IMAGE {
         ensure!(
@@ -187,6 +203,51 @@ fn cases(run: &mut Run) -> Result<()> {
     }
     #[cfg(windows)]
     restoration_cases(run, &red, &blue)?;
+    Ok(())
+}
+
+/// How long the stalled call is given before it must fail.
+const STALL_LIMIT: Duration = Duration::from_secs(3);
+
+/// A call that never comes back, while the desktop shows our photo. The wait
+/// must end in `STALL_LIMIT` plus a little, with the stalled child killed;
+/// `main` then restores the original and checks the OS agrees.
+fn stalled_call(run: &mut Run, red: &Path) -> Result<()> {
+    let layout = Layout::Same(red.to_path_buf());
+    wallpaper::set(&layout).context("the app's setter failed")?;
+    read_back(&layout, Colour::Red).context("the stalled-call case needs our photo up first")?;
+
+    let started = Instant::now();
+    let stalled = read_back_with(
+        STALL_LIMIT,
+        STALL_LIMIT,
+        |budget| run_bounded(&mut stall_command(&[], None), budget).map(|_| "returned".into()),
+        String::new,
+    );
+    let took = started.elapsed();
+    let err = stalled
+        .err()
+        .context("the stalled call returned; it was not stalled")?;
+    ensure!(
+        err.is::<Stalled>(),
+        "the stalled call failed another way: {err:#}"
+    );
+    ensure!(
+        took < STALL_LIMIT + Duration::from_secs(10),
+        "the stalled call took {took:.1?}, limit {STALL_LIMIT:?}"
+    );
+    let os_says = format!(
+        "gave up after {:.1} s (limit {} s) and killed the stalled child; restored below",
+        took.as_secs_f64(),
+        STALL_LIMIT.as_secs()
+    );
+    println!("  stalled-call: {os_says}");
+    run.rows.push(Row {
+        case: "stalled-call",
+        want: "Fails in bounded time".into(),
+        os_says,
+        screen: "not run".into(),
+    });
     Ok(())
 }
 
@@ -277,6 +338,23 @@ fn reconcile(run: &mut Run, dir: &Path, red: &Path, blue: &Path, size: (u32, u32
     Ok(())
 }
 
+/// Waits for the OS to report `before` again; the shell may take a moment
+/// to apply the restored wallpaper.
+fn restored_state(before: &str) -> Result<String> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let now = os::fingerprint()?;
+        if now == before {
+            return Ok(now);
+        }
+        ensure!(
+            Instant::now() < deadline,
+            "the original wallpaper is not back: was {before}, now {now}"
+        );
+        sleep(Duration::from_millis(250));
+    }
+}
+
 fn summary(run: &Run, result: &Result<()>) -> String {
     let mut md = format!("### OS wallpaper read-back ({})\n\n", env::consts::OS);
     md.push_str("| Case | Want | OS says | Screen |\n| --- | --- | --- | --- |\n");
@@ -303,6 +381,8 @@ fn summary(run: &Run, result: &Result<()>) -> String {
 }
 
 fn main() -> ExitCode {
+    // The stalled-call case re-runs this binary as its stalled child.
+    stall_if_asked();
     if env::var("ROTATOR_OS_TESTS").as_deref() != Ok("1") {
         println!(
             "os_wallpaper: skipped. It changes this desktop's wallpaper; \
@@ -345,20 +425,25 @@ fn main() -> ExitCode {
         scratch: os::resolve(scratch.path()),
     };
 
-    let saved = match os::save() {
-        Ok(saved) => saved,
-        Err(e) => {
-            println!("os_wallpaper: FAILED: could not save the original wallpaper: {e:#}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let mut result = cases(&mut run);
-    match os::restore(saved) {
-        Ok(()) => println!("  restored the original wallpaper"),
-        Err(e) => {
-            println!("  could not restore the original wallpaper: {e:#}");
-            result = Err(e.context("could not restore the original wallpaper"));
-        }
+    let mut restored = None;
+    let result = with_restoration(
+        || Ok((os::fingerprint()?, os::save()?)),
+        || cases(&mut run),
+        |(before, saved)| {
+            os::restore(saved)?;
+            let after = restored_state(&before)?;
+            println!("  restored the original wallpaper: {after}");
+            restored = Some(after);
+            Ok(())
+        },
+    );
+    if let Some(after) = restored {
+        run.rows.push(Row {
+            case: "restored",
+            want: "The OS reports the original wallpaper again".into(),
+            os_says: after,
+            screen: "not run".into(),
+        });
     }
 
     let md = summary(&run, &result);

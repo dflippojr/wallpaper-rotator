@@ -1,11 +1,26 @@
 //! Independent OS wallpaper read-back, pixel checks, and background restoration.
 //! Shared by the opt-in OS harness and the real-app WebDriver probe.
+//!
+//! Time limits. Every helper subprocess (gsettings, gdbus, PowerShell,
+//! screencapture, reg, tasklist) runs under [`run_bounded`] and is killed
+//! after `COMMAND_LIMIT` (`SCREENSHOT_LIMIT` for a screenshot). On Windows and
+//! GNOME each read-back attempt runs on a worker thread and is abandoned
+//! after `ATTEMPT_LIMIT`, so a stalled synchronous COM call fails the check
+//! instead of waiting for the job timeout, and the original wallpaper is
+//! still restored. What stays unbounded: macOS AppKit calls (they must stay
+//! on the main thread), and on every OS the app's own setter, `save` and
+//! `restore`. The 10 s and 20 s polling limits are how long to keep retrying
+//! a wrong answer, checked between calls; they are not wall-clock bounds on
+//! a call that is stuck.
 
 #[cfg(target_os = "macos")]
 use std::fs;
 use std::path::{Path, PathBuf};
+#[cfg(windows)]
 use std::thread::sleep;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(windows)]
+use std::time::Instant;
 
 use anyhow::{ensure, Context, Result};
 use image::{Rgb, RgbImage};
@@ -16,6 +31,14 @@ use rotator_core::wallpaper::Layout;
 #[cfg(target_os = "macos")]
 #[path = "background_snapshot.rs"]
 mod background_snapshot;
+
+#[path = "bounded.rs"]
+mod bounded;
+#[allow(unused_imports)]
+pub use bounded::{
+    call_within, read_back_with, run_bounded, stall_command, stall_if_asked, with_restoration,
+    Stalled, COMMAND_LIMIT,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Colour {
@@ -67,6 +90,10 @@ pub const RIGHT_HALF: Region = Region {
     x: (0.55, 0.95),
     y: (0.10, 0.90),
 };
+
+/// How long a screenshot may take; a bit more than a plain query, since
+/// Windows minimizes every window first.
+pub const SCREENSHOT_LIMIT: Duration = Duration::from_secs(45);
 
 /// The share of sampled pixels that must match for a screenshot to pass.
 pub const MIN_SHARE: f64 = 0.6;
@@ -146,25 +173,34 @@ pub fn file_is(file: &Path, want: Colour) -> Result<String> {
     Ok(rgb(sample.dominant))
 }
 
-/// Asks the OS what the desktop shows until it says `want`, for up to
-/// 10 seconds: the shell may apply a new wallpaper after the call returns.
+/// How long to keep asking the OS while it gives a wrong answer: the shell
+/// may apply a new wallpaper after the call returns.
+pub const READ_BACK_RETRY: Duration = Duration::from_secs(10);
+
+/// How long one read-back attempt may take where it can be abandoned.
+pub const ATTEMPT_LIMIT: Duration = Duration::from_secs(30);
+
+/// Asks the OS what the desktop shows until it says `want`.
 pub fn read_back(layout: &Layout, want: Colour) -> Result<String> {
-    let start = Instant::now();
-    loop {
-        match os::read_back(layout, want) {
-            Ok(says) if start.elapsed() < Duration::from_millis(100) => return Ok(says),
-            Ok(says) => {
-                return Ok(format!(
-                    "{says} (after {:.1} s)",
-                    start.elapsed().as_secs_f64()
-                ))
-            }
-            Err(e) if start.elapsed() > Duration::from_secs(10) => {
-                return Err(e.context(format!("still wrong after 10 s; {}", os::diagnose())));
-            }
-            Err(_) => sleep(Duration::from_millis(250)),
-        }
-    }
+    read_back_with(
+        READ_BACK_RETRY,
+        ATTEMPT_LIMIT,
+        |budget| attempt(layout, want, budget),
+        os::diagnose,
+    )
+}
+
+/// AppKit must be called on the main thread, so macOS can't abandon a
+/// stuck attempt.
+#[cfg(target_os = "macos")]
+fn attempt(layout: &Layout, want: Colour, _budget: Duration) -> Result<String> {
+    os::read_back(layout, want)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn attempt(layout: &Layout, want: Colour, budget: Duration) -> Result<String> {
+    let layout = layout.clone();
+    call_within(budget, move || os::read_back(&layout, want))
 }
 
 #[cfg(windows)]
@@ -252,6 +288,11 @@ pub mod os {
         Ok(says.join("; "))
     }
 
+    /// Everything `restore` puts back, as text, to compare before and after.
+    pub fn fingerprint() -> Result<String> {
+        Ok(format!("{:?}", save()?))
+    }
+
     /// What else Windows says about the wallpaper, for a failure message.
     pub fn diagnose() -> String {
         let mut out = format!("SPI_GETDESKWALLPAPER = {:?}", system_wallpaper().ok());
@@ -266,19 +307,21 @@ pub mod os {
                 "NoChangingWallPaper",
             ),
         ] {
-            let got = Command::new("reg")
-                .args(["query", key, "/v", value])
-                .output()
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                .unwrap_or_default();
+            let got = run_bounded(
+                Command::new("reg").args(["query", key, "/v", value]),
+                COMMAND_LIMIT,
+            )
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default();
             let got = got.lines().last().unwrap_or("(not set)").trim().to_string();
             out.push_str(&format!("; {key} {value}: {got}"));
         }
-        let explorer = Command::new("tasklist")
-            .args(["/FI", "IMAGENAME eq explorer.exe", "/NH"])
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).contains("explorer.exe"))
-            .unwrap_or(false);
+        let explorer = run_bounded(
+            Command::new("tasklist").args(["/FI", "IMAGENAME eq explorer.exe", "/NH"]),
+            COMMAND_LIMIT,
+        )
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains("explorer.exe"))
+        .unwrap_or(false);
         out.push_str(&format!("; explorer.exe running: {explorer}"));
         out
     }
@@ -348,9 +391,10 @@ pub mod os {
              $bmp.Save('{}', [System.Drawing.Imaging.ImageFormat]::Png)",
             dest.display().to_string().replace('\'', "''")
         );
-        let output = Command::new("powershell")
-            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-            .output()?;
+        let output = run_bounded(
+            Command::new("powershell").args(["-NoProfile", "-NonInteractive", "-Command", &script]),
+            SCREENSHOT_LIMIT,
+        )?;
         ensure!(
             output.status.success(),
             "{}",
@@ -411,6 +455,16 @@ pub mod os {
         Ok(says.join("; "))
     }
 
+    /// The wallpaper of every screen, to compare before and after.
+    pub fn fingerprint() -> Result<String> {
+        let workspace = NSWorkspace::sharedWorkspace();
+        Ok(screens()?
+            .iter()
+            .map(|s| format!("{:?}", shown(&workspace, s)))
+            .collect::<Vec<_>>()
+            .join(", "))
+    }
+
     /// Every screen's wallpaper, for a failure message.
     pub fn diagnose() -> String {
         let workspace = NSWorkspace::sharedWorkspace();
@@ -460,10 +514,12 @@ pub mod os {
 
     /// The main display, without the shutter sound.
     pub fn screenshot(dest: &Path) -> Result<()> {
-        let output = Command::new("screencapture")
-            .args(["-x", "-m", "-t", "png"])
-            .arg(dest)
-            .output()?;
+        let output = run_bounded(
+            Command::new("screencapture")
+                .args(["-x", "-m", "-t", "png"])
+                .arg(dest),
+            SCREENSHOT_LIMIT,
+        )?;
         ensure!(
             output.status.success() && dest.exists(),
             "screencapture: {}",
@@ -486,10 +542,10 @@ pub mod os {
     const KEYS: [&str; 3] = ["picture-uri", "picture-uri-dark", "picture-options"];
 
     fn get(key: &str) -> Result<String> {
-        let output = Command::new("gsettings")
-            .args(["get", SCHEMA, key])
-            .output()
-            .context("could not run gsettings")?;
+        let output = run_bounded(
+            Command::new("gsettings").args(["get", SCHEMA, key]),
+            COMMAND_LIMIT,
+        )?;
         ensure!(
             output.status.success(),
             "gsettings get {key}: {}",
@@ -499,10 +555,11 @@ pub mod os {
     }
 
     fn set(key: &str, value: &str) -> Result<()> {
-        let status = Command::new("gsettings")
-            .args(["set", SCHEMA, key, value])
-            .status()?;
-        ensure!(status.success(), "gsettings set {key} failed");
+        let output = run_bounded(
+            Command::new("gsettings").args(["set", SCHEMA, key, value]),
+            COMMAND_LIMIT,
+        )?;
+        ensure!(output.status.success(), "gsettings set {key} failed");
         Ok(())
     }
 
@@ -550,6 +607,15 @@ pub mod os {
         ))
     }
 
+    /// Every background key, to compare before and after.
+    pub fn fingerprint() -> Result<String> {
+        Ok(KEYS
+            .iter()
+            .map(|key| Ok(format!("{key} = {}", get(key)?)))
+            .collect::<Result<Vec<_>>>()?
+            .join(", "))
+    }
+
     /// Every background key, for a failure message.
     pub fn diagnose() -> String {
         KEYS.iter()
@@ -583,22 +649,23 @@ pub mod os {
 
     /// Through GNOME Shell's own screenshot service on the session bus.
     pub fn screenshot(dest: &Path) -> Result<()> {
-        let output = Command::new("gdbus")
-            .args([
-                "call",
-                "--session",
-                "--dest",
-                "org.gnome.Shell.Screenshot",
-                "--object-path",
-                "/org/gnome/Shell/Screenshot",
-                "--method",
-                "org.gnome.Shell.Screenshot.Screenshot",
-                "false",
-                "false",
-            ])
-            .arg(dest)
-            .output()
-            .context("could not run gdbus")?;
+        let output = run_bounded(
+            Command::new("gdbus")
+                .args([
+                    "call",
+                    "--session",
+                    "--dest",
+                    "org.gnome.Shell.Screenshot",
+                    "--object-path",
+                    "/org/gnome/Shell/Screenshot",
+                    "--method",
+                    "org.gnome.Shell.Screenshot.Screenshot",
+                    "false",
+                    "false",
+                ])
+                .arg(dest),
+            SCREENSHOT_LIMIT,
+        )?;
         ensure!(
             output.status.success() && dest.exists(),
             "org.gnome.Shell.Screenshot: {}{}",
