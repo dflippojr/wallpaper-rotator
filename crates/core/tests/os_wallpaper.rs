@@ -381,7 +381,9 @@ fn spanned(run: &mut Run, dir: &Path, (w, h): (u32, u32)) -> Result<()> {
 /// leaves a wallpaper the user picked alone.
 fn reconcile(run: &mut Run, dir: &Path, red: &Path, blue: &Path, size: (u32, u32)) -> Result<()> {
     let current = Layout::Same(blue.to_path_buf());
-    wallpaper::set(&Layout::Same(red.to_path_buf()))?;
+    let stale = Layout::Same(red.to_path_buf());
+    wallpaper::set(&stale)?;
+    read_back(&stale, Colour::Red).context("reconcile's stale starting wallpaper did not apply")?;
     ensure!(
         wallpaper::reconcile(&current, dir)?,
         "reconcile left our stale red photo up"
@@ -405,6 +407,7 @@ fn reconcile(run: &mut Run, dir: &Path, red: &Path, blue: &Path, size: (u32, u32
     let mine = fixture(&mine, "red.png", size, Colour::Red)?;
     let users = Layout::Same(mine);
     wallpaper::set(&users)?;
+    read_back(&users, Colour::Red).context("reconcile's user-selected wallpaper did not apply")?;
     ensure!(
         !wallpaper::reconcile(&current, dir)?,
         "reconcile replaced a wallpaper from outside the app's folder"
