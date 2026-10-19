@@ -42,6 +42,10 @@ use anyhow::{ensure, Context, Result};
 use image::{Rgb, RgbImage};
 use rotator_core::wallpaper::{self, Display, Layout};
 
+#[cfg(target_os = "macos")]
+#[path = "common/background_snapshot.rs"]
+mod background_snapshot;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Colour {
     Red,
@@ -849,16 +853,12 @@ mod os {
 
     pub fn save() -> Result<Saved> {
         let workspace = NSWorkspace::sharedWorkspace();
-        Ok(Saved(
-            screens()?
-                .into_iter()
-                .filter_map(|screen| {
-                    let url = workspace.desktopImageURLForScreen(&screen)?;
-                    let options = workspace.desktopImageOptionsForScreen(&screen)?;
-                    Some((screen, url, options))
-                })
-                .collect(),
-        ))
+        Ok(Saved(background_snapshot::capture(screens()?, |screen| {
+            (
+                workspace.desktopImageURLForScreen(screen),
+                workspace.desktopImageOptionsForScreen(screen),
+            )
+        })?))
     }
 
     pub fn restore(saved: Saved) -> Result<()> {
