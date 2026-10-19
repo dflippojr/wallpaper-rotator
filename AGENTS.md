@@ -69,3 +69,5 @@ Tests deleted or skipped, or config loosened, with the reason. Empty if none.
 ```
 
 **Never claim an OS was verified unless you ran it there.** CI passing on `macos-latest` proves it compiles and the unit tests pass. It doesn't prove the wallpaper changed on a Mac.
+
+After you push fix commits to a PR, re-run the automated review on its head: `gh workflow run review.yml -f pr_number=<PR> -f mode=full`.
