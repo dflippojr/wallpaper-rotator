@@ -4,6 +4,15 @@ A Tauri tray app (`app/`) on top of a platform-independent core (`crates/core`) 
 
 ## How to prove a change works
 
+### Scratch space
+
+Keep toolchain homes, build output and test scratch out of the system temp dir (`/tmp` on Linux and macOS, `%TEMP%` on Windows). A full `/tmp` stalls every job on a shared host.
+
+- `scripts/check.sh` sets `TMPDIR`, and `scripts/check.ps1` sets `TMP` and `TEMP`, to a fresh `.verify/tmp.*` directory in the worktree. The gate deletes it when it exits, pass or fail.
+- `scripts/test-release-smoke.sh` builds its mock tree under `.verify/smoke.*` and deletes it on exit.
+- A step that needs its own `RUSTUP_HOME` or `CARGO_HOME` uses `.verify/` or `~/.cache/wallpaper-rotator/`, never `/tmp`. Toolchain homes are caches, so they persist across runs; delete them by hand with `rm -rf .verify` when you are done with the worktree.
+- `.verify/` is git-ignored.
+
 ### 1. Run the local gate
 
 One command runs what the CI `test` job runs on your OS:
