@@ -8,6 +8,12 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# Test scratch (tempfile directories) stays in the worktree, not /tmp.
+mkdir -p .verify
+scratch=$(mktemp -d "$PWD/.verify/tmp.XXXXXX")
+trap 'rm -rf "$scratch"' EXIT
+export TMPDIR="$scratch"
+
 step() { printf '\n==> %s\n' "$*"; }
 
 step "cargo fmt --all --check"

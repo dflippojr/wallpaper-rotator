@@ -2,7 +2,8 @@
 # Regression checks without installing software or launching a desktop app.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
-scratch=$(mktemp -d)
+mkdir -p "$root/.verify"
+scratch=$(mktemp -d "$root/.verify/smoke.XXXXXX")
 trap 'rm -rf "$scratch"' EXIT
 failures=0
 
