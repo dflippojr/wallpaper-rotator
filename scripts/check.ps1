@@ -8,6 +8,9 @@ $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path -Parent $PSScriptRoot)
 
 # Test scratch (tempfile directories) stays in the worktree, not the system temp dir.
+# The caller's TMP and TEMP come back when the script exits, even in an existing session.
+$callerTmp = $env:TMP
+$callerTemp = $env:TEMP
 $scratch = Join-Path (Get-Location) ('.verify\tmp.' + [IO.Path]::GetRandomFileName().Replace('.', ''))
 New-Item -ItemType Directory -Force -Path $scratch | Out-Null
 $env:TMP = $scratch
@@ -35,4 +38,6 @@ try {
     Write-Host '==> all checks passed'
 } finally {
     Remove-Item -Recurse -Force -LiteralPath $scratch -ErrorAction SilentlyContinue
+    $env:TMP = $callerTmp
+    $env:TEMP = $callerTemp
 }
