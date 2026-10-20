@@ -33,7 +33,7 @@ if [ "$(uname -s)" = "Linux" ]; then
   fi
   if ! cargo llvm-cov --version > /dev/null 2>&1; then
     echo "error: cargo-llvm-cov is missing. Install it with:" >&2
-    echo "  rustup component add llvm-tools-preview && cargo install cargo-llvm-cov --locked" >&2
+    echo "  rustup component add llvm-tools-preview && cargo install cargo-llvm-cov --locked --target-dir .verify/cargo-install" >&2
     exit 1
   fi
   step "cargo llvm-cov --workspace (floor ${floor}% lines)"

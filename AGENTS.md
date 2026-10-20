@@ -11,6 +11,7 @@ Keep toolchain homes, build output and test scratch out of the system temp dir (
 - `scripts/check.sh` sets `TMPDIR`, and `scripts/check.ps1` sets `TMP` and `TEMP`, to a fresh `.verify/tmp.*` directory in the worktree. The gate deletes it when it exits, pass or fail.
 - `scripts/test-release-smoke.sh` builds its mock tree under `.verify/smoke.*` and deletes it on exit.
 - A step that needs its own `RUSTUP_HOME` or `CARGO_HOME` uses `.verify/` or `~/.cache/wallpaper-rotator/`, never `/tmp`. Toolchain homes are caches, so they persist across runs; delete them by hand with `rm -rf .verify` when you are done with the worktree.
+- `cargo install` builds in the system temp dir unless told otherwise, so pass `--target-dir .verify/cargo-install` (the install commands below do).
 - `.verify/` is git-ignored.
 
 ### 1. Run the local gate
@@ -22,7 +23,7 @@ scripts/check.sh                                          # Linux, macOS (bash)
 powershell -ExecutionPolicy Bypass -File scripts\check.ps1   # Windows (PowerShell 5.1 or 7)
 ```
 
-Both run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace`. On Linux, `check.sh` also runs `cargo llvm-cov --workspace` against the coverage floor (`COVERAGE_FLOOR` in `.github/workflows/ci.yml`). It needs `rustup component add llvm-tools-preview` and `cargo install cargo-llvm-cov --locked`.
+Both run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace`. On Linux, `check.sh` also runs `cargo llvm-cov --workspace` against the coverage floor (`COVERAGE_FLOOR` in `.github/workflows/ci.yml`). It needs `rustup component add llvm-tools-preview` and `cargo install cargo-llvm-cov --locked --target-dir .verify/cargo-install`.
 
 The floor only goes up. If your change raises coverage, raise `COVERAGE_FLOOR` to the new total minus 1 point. Never lower it, delete tests or add `#[ignore]` to get a PR through. If you must, say so under `### Gate changes` in the PR.
 
@@ -123,7 +124,7 @@ Build/install prerequisites:
 
 ```sh
 cargo build --locked -p wallpaper-rotator -p rotator-core --bin wallpaper-rotator --bin wallpaper-rotator-cli -j 4
-cargo install tauri-driver --version 2.1.0 --locked -j 4
+cargo install tauri-driver --version 2.1.0 --locked -j 4 --target-dir .verify/cargo-install
 ```
 
 On Windows, MSVC C++ Build Tools and WebView2 must be installed. Run:
