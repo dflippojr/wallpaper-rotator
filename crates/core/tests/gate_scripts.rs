@@ -5,6 +5,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+/// The wrapper this OS's test job runs.
+const WRAPPER: &str = if cfg!(windows) {
+    "check.ps1"
+} else {
+    "check.sh"
+};
+
 /// A scratch copy of one wrapper, with a mock `cargo` first on PATH.
 struct GateTree {
     dir: tempfile::TempDir,
@@ -51,7 +58,7 @@ impl GateTree {
         std::env::join_paths(paths).unwrap()
     }
 
-    /// Every cargo call saw scratch under this tree's `.verify/`, and nothing is left there afterwards.
+    /// Every cargo call saw scratch in a `.verify` directory, and nothing is left in this tree's `.verify/` afterwards.
     fn assert_scratch_contained(&self) {
         let log = fs::read_to_string(self.log()).unwrap();
         let verify = self.root().join(".verify");
@@ -115,17 +122,12 @@ exit /b 0
 /// Runs the wrapper the way a developer does: `bash scripts/check.sh` on Unix, `check.ps1` on Windows.
 fn run_gate(tree: &GateTree, fail_on: Option<&str>) -> Output {
     let _ = fs::remove_file(tree.log());
-    let wrapper = if cfg!(windows) {
-        "check.ps1"
-    } else {
-        "check.sh"
-    };
     let mut command = Command::new(if cfg!(windows) { "powershell" } else { "bash" });
     if cfg!(windows) {
         command.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]);
     }
     command
-        .arg(tree.script(wrapper))
+        .arg(tree.script(WRAPPER))
         .current_dir(tree.root())
         .env("PATH", tree.path())
         .env("GATE_LOG", tree.log())
@@ -143,11 +145,7 @@ fn output_text(output: &Output) -> String {
 
 #[test]
 fn gate_wrapper_keeps_scratch_in_the_worktree_and_removes_it() {
-    let tree = GateTree::new(if cfg!(windows) {
-        "check.ps1"
-    } else {
-        "check.sh"
-    });
+    let tree = GateTree::new(WRAPPER);
 
     let passed = run_gate(&tree, None);
     assert!(passed.status.success(), "{}", output_text(&passed));
