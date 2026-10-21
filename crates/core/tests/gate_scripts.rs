@@ -161,15 +161,13 @@ fn gate_wrapper_keeps_scratch_in_the_worktree_and_removes_it() {
 }
 
 /// Runs check.ps1 from an existing PowerShell session, as a caller does, with the caller's TMP and TEMP set first.
+/// The script path goes in through an environment variable, so no path characters are parsed as PowerShell.
 #[cfg(windows)]
 fn run_from_caller_session(tree: &GateTree) -> Output {
-    let command = format!(
-        "$env:TMP = 'caller-tmp'; $env:TEMP = 'caller-temp'; & '{}'; Write-Output ('after TMP=' + $env:TMP + ' TEMP=' + $env:TEMP)",
-        tree.script("check.ps1").display()
-    );
     Command::new("powershell")
         .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"])
-        .arg(command)
+        .arg("$env:TMP = 'caller-tmp'; $env:TEMP = 'caller-temp'; & $env:GATE_SCRIPT; Write-Output ('after TMP=' + $env:TMP + ' TEMP=' + $env:TEMP)")
+        .env("GATE_SCRIPT", tree.script("check.ps1"))
         .current_dir(tree.root())
         .env("PATH", tree.path())
         .env("GATE_LOG", tree.log())
