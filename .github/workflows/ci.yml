@@ -121,7 +121,7 @@ jobs:
       - name: Build the real debug app and CLI
         run: cargo build --locked -p wallpaper-rotator -p rotator-core --bin wallpaper-rotator --bin wallpaper-rotator-cli -j 4
       - name: Install tauri-driver
-        run: cargo install tauri-driver --version 2.1.0 --locked -j 4
+        run: cargo install tauri-driver --version 2.1.0 --locked -j 4 --target-dir .verify/cargo-install
       - name: Install matching Edge WebDriver
         if: runner.os == 'Windows'
         shell: powershell

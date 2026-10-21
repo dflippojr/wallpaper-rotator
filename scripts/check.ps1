@@ -7,6 +7,15 @@ $ErrorActionPreference = 'Stop'
 
 Set-Location (Split-Path -Parent $PSScriptRoot)
 
+# Test scratch (tempfile directories) stays in the worktree, not the system temp dir.
+# The caller's TMP and TEMP come back when the script exits, even in an existing session.
+$callerTmp = $env:TMP
+$callerTemp = $env:TEMP
+$scratch = Join-Path (Get-Location) ('.verify\tmp.' + [IO.Path]::GetRandomFileName().Replace('.', ''))
+New-Item -ItemType Directory -Force -Path $scratch | Out-Null
+$env:TMP = $scratch
+$env:TEMP = $scratch
+
 function Invoke-Step {
     param([string]$Label, [string[]]$CargoArgs)
     Write-Host ''
@@ -18,11 +27,17 @@ function Invoke-Step {
     }
 }
 
-Invoke-Step 'fmt --all --check' @('fmt', '--all', '--check')
-Invoke-Step 'clippy --workspace --all-targets -- -D warnings' @('clippy', '--workspace', '--all-targets', '--', '-D', 'warnings')
-Invoke-Step 'test --workspace' @('test', '--workspace')
+try {
+    Invoke-Step 'fmt --all --check' @('fmt', '--all', '--check')
+    Invoke-Step 'clippy --workspace --all-targets -- -D warnings' @('clippy', '--workspace', '--all-targets', '--', '-D', 'warnings')
+    Invoke-Step 'test --workspace' @('test', '--workspace')
 
-Write-Host ''
-Write-Host '==> coverage skipped: CI measures it on Linux only'
-Write-Host ''
-Write-Host '==> all checks passed'
+    Write-Host ''
+    Write-Host '==> coverage skipped: CI measures it on Linux only'
+    Write-Host ''
+    Write-Host '==> all checks passed'
+} finally {
+    Remove-Item -Recurse -Force -LiteralPath $scratch -ErrorAction SilentlyContinue
+    $env:TMP = $callerTmp
+    $env:TEMP = $callerTemp
+}
