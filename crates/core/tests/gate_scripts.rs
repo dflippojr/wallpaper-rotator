@@ -19,7 +19,11 @@ struct GateTree {
 
 impl GateTree {
     fn new(wrapper: &str) -> Self {
-        let dir = tempfile::tempdir().unwrap();
+        Self::in_dir(wrapper, tempfile::tempdir().unwrap())
+    }
+
+    /// Builds the tree inside `dir`, so a test can choose the path the wrapper runs from.
+    fn in_dir(wrapper: &str, dir: tempfile::TempDir) -> Self {
         let root = dir.path();
         fs::create_dir_all(root.join("scripts")).unwrap();
         fs::create_dir_all(root.join(".github/workflows")).unwrap();
@@ -156,27 +160,49 @@ fn gate_wrapper_keeps_scratch_in_the_worktree_and_removes_it() {
     tree.assert_scratch_contained();
 }
 
-/// A caller who runs check.ps1 in an existing session keeps its own TMP and TEMP afterwards.
+/// Runs check.ps1 from an existing PowerShell session, as a caller does, with the caller's TMP and TEMP set first.
 #[cfg(windows)]
-#[test]
-fn check_ps1_restores_the_callers_temp_variables() {
-    let tree = GateTree::new("check.ps1");
+fn run_from_caller_session(tree: &GateTree) -> Output {
     let command = format!(
         "$env:TMP = 'caller-tmp'; $env:TEMP = 'caller-temp'; & '{}'; Write-Output ('after TMP=' + $env:TMP + ' TEMP=' + $env:TEMP)",
         tree.script("check.ps1").display()
     );
-    let output = Command::new("powershell")
+    Command::new("powershell")
         .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"])
         .arg(command)
         .current_dir(tree.root())
         .env("PATH", tree.path())
         .env("GATE_LOG", tree.log())
         .output()
-        .unwrap();
+        .unwrap()
+}
+
+#[cfg(windows)]
+fn assert_caller_temp_restored(output: &Output) {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains("after TMP=caller-tmp TEMP=caller-temp"),
         "{}",
-        output_text(&output)
+        output_text(output)
     );
+}
+
+/// A caller who runs check.ps1 in an existing session keeps its own TMP and TEMP afterwards.
+#[cfg(windows)]
+#[test]
+fn check_ps1_restores_the_callers_temp_variables() {
+    let tree = GateTree::new("check.ps1");
+    assert_caller_temp_restored(&run_from_caller_session(&tree));
+}
+
+/// The same invocation from a path with an apostrophe, as in a user profile such as `C:\Users\O'Brien`.
+#[cfg(windows)]
+#[test]
+fn check_ps1_restores_the_callers_temp_variables_under_an_apostrophe_path() {
+    let dir = tempfile::Builder::new()
+        .prefix("o'brien-")
+        .tempdir()
+        .unwrap();
+    let tree = GateTree::in_dir("check.ps1", dir);
+    assert_caller_temp_restored(&run_from_caller_session(&tree));
 }
