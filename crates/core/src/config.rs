@@ -6,6 +6,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::source::SourceId;
 
+/// The smallest image cache, in megabytes. `ui/app.js` and `ui/index.html`
+/// repeat it for the settings form, which can't import it.
+pub const MIN_CACHE_MB: u64 = 20;
+
 /// User settings, stored as TOML in the platform config folder.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -81,16 +85,17 @@ impl Config {
         crate::store::write_atomic(path, text.as_bytes())
     }
 
-    pub fn effective_key(&self) -> String {
-        env_or("UNSPLASH_ACCESS_KEY", &self.access_key)
-    }
-
-    pub fn effective_pexels_key(&self) -> String {
-        env_or("PEXELS_API_KEY", &self.pexels_key)
+    /// The keys in use, trimmed. With `env`, `UNSPLASH_ACCESS_KEY` and
+    /// `PEXELS_API_KEY` win over the saved keys when they are set.
+    pub fn keys(&self, env: bool) -> Keys {
+        Keys {
+            unsplash: env_or("UNSPLASH_ACCESS_KEY", env, &self.access_key),
+            pexels: env_or("PEXELS_API_KEY", env, &self.pexels_key),
+        }
     }
 
     pub fn cache_cap_bytes(&self) -> u64 {
-        self.cache_cap_mb.max(20) * 1024 * 1024
+        self.cache_cap_mb.max(MIN_CACHE_MB) * 1024 * 1024
     }
 
     /// The settings that shape fetched photos; prefetched photos are dropped
@@ -105,9 +110,16 @@ impl Config {
     }
 }
 
-fn env_or(var: &str, fallback: &str) -> String {
-    std::env::var(var)
-        .ok()
+/// The keys for the keyed sources; empty when not set.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Keys {
+    pub unsplash: String,
+    pub pexels: String,
+}
+
+fn env_or(var: &str, env: bool, fallback: &str) -> String {
+    let from_env = if env { std::env::var(var).ok() } else { None };
+    from_env
         .filter(|k| !k.trim().is_empty())
         .unwrap_or_else(|| fallback.to_string())
         .trim()
@@ -160,5 +172,50 @@ mod tests {
             ..Config::default()
         };
         assert_eq!(config.cache_cap_bytes(), 20 * 1024 * 1024);
+    }
+
+    #[test]
+    fn keys_are_trimmed_and_the_environment_wins() {
+        let config = Config {
+            access_key: "  saved\n".into(),
+            pexels_key: " px ".into(),
+            ..Config::default()
+        };
+        assert_eq!(
+            config.keys(false),
+            Keys {
+                unsplash: "saved".into(),
+                pexels: "px".into(),
+            }
+        );
+        // The environment is set on a child process, so this one's environment
+        // and the parallel tests stay as they are.
+        let child = "ROTATOR_KEYS_TEST_CHILD";
+        if std::env::var_os(child).is_some() {
+            assert_eq!(
+                config.keys(true),
+                Keys {
+                    unsplash: "env".into(),
+                    pexels: "env px".into(),
+                }
+            );
+            return;
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "config::tests::keys_are_trimmed_and_the_environment_wins",
+            ])
+            .env(child, "1")
+            .env("UNSPLASH_ACCESS_KEY", "  env\n")
+            .env("PEXELS_API_KEY", " env px ")
+            .output()
+            .unwrap();
+        // A name that matches no test exits 0, so also require that it ran.
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "{stdout}"
+        );
     }
 }

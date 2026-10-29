@@ -13,6 +13,8 @@ use crate::config::Config;
 use crate::net::{key_forms, scrub, Call, Http};
 use crate::source::{daily, image_url, pexels, unsplash, wallhaven, Candidate};
 
+pub use crate::config::Keys;
+
 /// The sources the live check calls, by their API names.
 pub const SOURCES: [&str; 5] = ["Unsplash", "Pexels", "Wallhaven", "Bing", "Wikimedia"];
 /// Photos kept in a recorded list, so fixtures stay small.
@@ -26,13 +28,6 @@ const ACCOUNT_FIELDS: [&str; 4] = [
     "liked",
 ];
 
-/// The keys for the keyed sources; empty when not set.
-#[derive(Debug, Clone, Default)]
-pub struct Keys {
-    pub unsplash: String,
-    pub pexels: String,
-}
-
 impl Keys {
     /// The keys the app would use: `UNSPLASH_ACCESS_KEY` and
     /// `PEXELS_API_KEY`, else the ones saved in `config` (never written).
@@ -41,10 +36,7 @@ impl Keys {
             .and_then(|path| fs::read_to_string(path).ok())
             .and_then(|text| toml::from_str::<Config>(&text).ok())
             .unwrap_or_default();
-        Self {
-            unsplash: saved.effective_key(),
-            pexels: saved.effective_pexels_key(),
-        }
+        saved.keys(true)
     }
 
     fn for_source(&self, source: &str) -> Option<&str> {

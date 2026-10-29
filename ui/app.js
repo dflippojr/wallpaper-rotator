@@ -158,6 +158,7 @@ async function saveSettings(event) {
     username: $("f-username").value,
     interval_minutes: Number($("f-interval").value),
     paused: $("f-paused").checked,
+    // The floor is MIN_CACHE_MB in crates/core/src/config.rs (also `min` in index.html).
     cache_cap_mb: Math.max(20, Number($("f-cap").value) || 200),
     start_at_login: $("f-login").checked,
     per_display: $("f-each").checked,
