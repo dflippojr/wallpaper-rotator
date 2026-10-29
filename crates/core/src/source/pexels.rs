@@ -117,6 +117,39 @@ fn candidate(photo: Photo) -> Candidate {
 mod tests {
     use super::*;
 
+    /// The sized URL Pexels gives a landscape photo whose original is
+    /// `original`.
+    fn sized_url(original: &str) -> String {
+        let reply = serde_json::json!({"photos": [{
+            "id": 1,
+            "width": 6000,
+            "height": 4000,
+            "url": "https://www.pexels.com/photo/1/",
+            "photographer": "Ann",
+            "photographer_url": "https://www.pexels.com/@ann",
+            "avg_color": null,
+            "alt": null,
+            "src": {"original": original, "medium": "https://images.pexels.com/m.jpg"},
+        }]});
+        let (photos, _) = parse_batch(&reply.to_string()).unwrap();
+        let Image::Sized { url } = photos[0].image.clone() else {
+            panic!()
+        };
+        url
+    }
+
+    #[test]
+    fn sized_url_adds_the_crop_to_any_query() {
+        assert_eq!(
+            sized_url("https://images.pexels.com/photos/1/pexels.jpeg"),
+            "https://images.pexels.com/photos/1/pexels.jpeg?auto=compress&cs=tinysrgb&fit=crop&w={w}&h={h}"
+        );
+        assert_eq!(
+            sized_url("https://images.pexels.com/photos/1/pexels.jpeg?cs=srgb"),
+            "https://images.pexels.com/photos/1/pexels.jpeg?cs=srgb&auto=compress&cs=tinysrgb&fit=crop&w={w}&h={h}"
+        );
+    }
+
     #[test]
     fn needs_a_key() {
         assert!(batch(&Http::default(), "", "x", None, 0).is_err());

@@ -434,4 +434,30 @@ mod tests {
         );
         assert_eq!(encode("a,b"), "a%2Cb");
     }
+
+    #[test]
+    fn appends_one_query_separator() {
+        assert_eq!(append_query("https://x/p", "a=1"), "https://x/p?a=1");
+        assert_eq!(
+            append_query("https://x/p?b=2", "a=1"),
+            "https://x/p?b=2&a=1"
+        );
+        assert_eq!(append_query("https://x/p?", "a=1"), "https://x/p?a=1");
+        assert_eq!(
+            append_query("https://x/p?b=2&", "a=1"),
+            "https://x/p?b=2&a=1"
+        );
+    }
+
+    #[test]
+    fn keeps_placeholders_as_they_are() {
+        assert_eq!(
+            append_query("https://x/p", "w={w}&h={h}"),
+            "https://x/p?w={w}&h={h}"
+        );
+        assert_eq!(
+            append_query("https://x/{w}?id=1", "w={w}&h={h}"),
+            "https://x/{w}?id=1&w={w}&h={h}"
+        );
+    }
 }

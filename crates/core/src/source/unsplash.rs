@@ -420,6 +420,26 @@ mod tests {
     }
 
     #[test]
+    fn utm_joins_an_existing_query() {
+        assert_eq!(
+            with_utm("https://unsplash.com/@a?lang=de"),
+            format!("https://unsplash.com/@a?lang=de&{UTM}")
+        );
+    }
+
+    #[test]
+    fn sized_url_adds_the_crop_to_any_query() {
+        assert_eq!(
+            sized_url("https://images.unsplash.com/photo-1"),
+            "https://images.unsplash.com/photo-1?w={w}&h={h}&fit=crop&crop=entropy&fm=jpg&q=85"
+        );
+        assert_eq!(
+            sized_url("https://images.unsplash.com/photo-1?ixid=abc"),
+            "https://images.unsplash.com/photo-1?ixid=abc&w={w}&h={h}&fit=crop&crop=entropy&fm=jpg&q=85"
+        );
+    }
+
+    #[test]
     fn collection_ids_and_urls() {
         assert_eq!(parse_collections(" 123, https://unsplash.com/collections/abc_-12/lakes?utm_source=x#top, 123\nwww.unsplash.com/collections/456/ ").unwrap(), ["123", "abc_-12", "456"]);
         assert!(parse_collections(" , ").unwrap().is_empty());
