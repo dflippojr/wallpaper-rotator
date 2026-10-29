@@ -12,7 +12,8 @@ use std::time::{Duration, Instant};
 use rotator_core::config::Config;
 use rotator_core::log;
 use rotator_core::paths::Paths;
-use rotator_core::service::{Command, Hooks, Service, Settings, Snapshot};
+use rotator_core::service::{Command, Hooks, Service, Settings, Snapshot, WallpaperView};
+use rotator_core::source::SourceId;
 use rotator_core::wallpaper::{self, Display, Layout};
 use tauri::image::Image;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
@@ -329,29 +330,58 @@ fn build_tray(app: &AppHandle, paused: bool) -> tauri::Result<()> {
 /// Keeps the tray tooltip and pause checkbox in step with the worker.
 fn refresh_tray(app: &AppHandle, snapshot: &Snapshot) {
     if let Some(tray) = app.tray_by_id("main") {
-        let tip = match snapshot.current.as_slice() {
-            [] => "Wallpaper Rotator".into(),
-            photos => {
-                let mut authors: Vec<&str> = photos.iter().map(|w| w.author.as_str()).collect();
-                authors.dedup();
-                let noun = if authors.len() == 1 {
-                    "Photo"
-                } else {
-                    "Photos"
-                };
-                format!(
-                    "Wallpaper Rotator\n{noun} by {} on Unsplash",
-                    authors.join(", ")
-                )
-            }
-        };
-        let _ = tray.set_tooltip(Some(tip));
+        let _ = tray.set_tooltip(Some(tray_tooltip(&snapshot.current)));
     }
     if let Some(state) = app.try_state::<AppState>() {
         if let Some(item) = state.pause_item.lock().unwrap().as_ref() {
             let _ = item.set_checked(snapshot.settings.paused);
         }
     }
+}
+
+/// The tray tooltip: who took the current photos and where they came from.
+fn tray_tooltip(photos: &[WallpaperView]) -> String {
+    if photos.is_empty() {
+        return "Wallpaper Rotator".into();
+    }
+    let mut sources: Vec<&str> = Vec::new();
+    for photo in photos {
+        if !sources.contains(&photo.source.as_str()) {
+            sources.push(&photo.source);
+        }
+    }
+    let mut authors: Vec<&str> = photos
+        .iter()
+        .filter(|w| !anonymous(&w.source))
+        .map(|w| w.author.as_str())
+        .collect();
+    authors.dedup();
+    let line = if authors.is_empty() {
+        let noun = if sources.len() == 1 {
+            "Photo"
+        } else {
+            "Photos"
+        };
+        format!("{noun} from {}", sources.join(" and "))
+    } else {
+        let noun = if authors.len() == 1 {
+            "Photo"
+        } else {
+            "Photos"
+        };
+        format!(
+            "{noun} by {} on {}",
+            authors.join(", "),
+            sources.join(" and ")
+        )
+    };
+    format!("Wallpaper Rotator\n{line}")
+}
+
+/// Wallhaven's author is the site and a favorite's author comes from its file
+/// name, so these photos name their source instead of a photographer.
+fn anonymous(source: &str) -> bool {
+    source == SourceId::Wallhaven.name() || source == SourceId::Favorites.name()
 }
 
 #[cfg(target_os = "macos")]
@@ -505,4 +535,66 @@ fn main() {
                 api.prevent_exit();
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn photo(author: &str, source: &str) -> WallpaperView {
+        WallpaperView {
+            author: author.into(),
+            source: source.into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn tray_tooltip_keeps_the_unsplash_credit() {
+        assert_eq!(tray_tooltip(&[]), "Wallpaper Rotator");
+        assert_eq!(
+            tray_tooltip(&[photo("Ann", "Unsplash")]),
+            "Wallpaper Rotator\nPhoto by Ann on Unsplash"
+        );
+        assert_eq!(
+            tray_tooltip(&[photo("Ann", "Unsplash"), photo("Bo", "Unsplash")]),
+            "Wallpaper Rotator\nPhotos by Ann, Bo on Unsplash"
+        );
+    }
+
+    #[test]
+    fn tray_tooltip_names_the_provider() {
+        assert_eq!(
+            tray_tooltip(&[photo("Ann", "Pexels")]),
+            "Wallpaper Rotator\nPhoto by Ann on Pexels"
+        );
+    }
+
+    #[test]
+    fn tray_tooltip_lists_each_provider_once() {
+        assert_eq!(
+            tray_tooltip(&[
+                photo("Ann", "Unsplash"),
+                photo("Bo", "Pexels"),
+                photo("Cy", "Unsplash"),
+            ]),
+            "Wallpaper Rotator\nPhotos by Ann, Bo, Cy on Unsplash and Pexels"
+        );
+    }
+
+    #[test]
+    fn tray_tooltip_names_the_site_for_wallhaven_and_favorites() {
+        assert_eq!(
+            tray_tooltip(&[photo("Wallhaven", "Wallhaven")]),
+            "Wallpaper Rotator\nPhoto from Wallhaven"
+        );
+        assert_eq!(
+            tray_tooltip(&[photo("sunset", "Favorites")]),
+            "Wallpaper Rotator\nPhoto from Favorites"
+        );
+        assert_eq!(
+            tray_tooltip(&[photo("Ann", "Unsplash"), photo("Wallhaven", "Wallhaven")]),
+            "Wallpaper Rotator\nPhoto by Ann on Unsplash and Wallhaven"
+        );
+    }
 }
