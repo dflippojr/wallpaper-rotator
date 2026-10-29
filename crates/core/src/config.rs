@@ -81,12 +81,13 @@ impl Config {
         crate::store::write_atomic(path, text.as_bytes())
     }
 
-    pub fn effective_key(&self) -> String {
-        env_or("UNSPLASH_ACCESS_KEY", &self.access_key)
-    }
-
-    pub fn effective_pexels_key(&self) -> String {
-        env_or("PEXELS_API_KEY", &self.pexels_key)
+    /// The keys in use, trimmed. With `env`, `UNSPLASH_ACCESS_KEY` and
+    /// `PEXELS_API_KEY` win over the saved keys when they are set.
+    pub fn keys(&self, env: bool) -> Keys {
+        Keys {
+            unsplash: env_or("UNSPLASH_ACCESS_KEY", env, &self.access_key),
+            pexels: env_or("PEXELS_API_KEY", env, &self.pexels_key),
+        }
     }
 
     pub fn cache_cap_bytes(&self) -> u64 {
@@ -105,9 +106,16 @@ impl Config {
     }
 }
 
-fn env_or(var: &str, fallback: &str) -> String {
-    std::env::var(var)
-        .ok()
+/// The keys for the keyed sources; empty when not set.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Keys {
+    pub unsplash: String,
+    pub pexels: String,
+}
+
+fn env_or(var: &str, env: bool, fallback: &str) -> String {
+    let from_env = if env { std::env::var(var).ok() } else { None };
+    from_env
         .filter(|k| !k.trim().is_empty())
         .unwrap_or_else(|| fallback.to_string())
         .trim()

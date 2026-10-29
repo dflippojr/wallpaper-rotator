@@ -18,7 +18,7 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Serialize;
 
-use crate::config::Config;
+use crate::config::{Config, Keys};
 use crate::net::{self, Http};
 use crate::paths::Paths;
 use crate::source::{self, daily, favorites, pexels, unsplash, wallhaven, Candidate, SourceId};
@@ -282,8 +282,8 @@ impl Service {
     }
 
     /// The Unsplash and Pexels keys in use.
-    fn keys(&self) -> (String, String) {
-        keys(&self.config, self.env_keys)
+    fn keys(&self) -> Keys {
+        self.config.keys(self.env_keys)
     }
 
     /// Starts the worker thread and returns its command channel.
@@ -352,7 +352,7 @@ impl Service {
     pub fn snapshot(&self) -> Snapshot {
         let next_rotation_at = (!self.config.paused && self.config.interval_minutes > 0)
             .then(|| self.state.last_rotated + self.config.interval_minutes * 60);
-        let (unsplash_key, pexels_key) = self.keys();
+        let keys = self.keys();
         Snapshot {
             current: self
                 .state
@@ -365,8 +365,8 @@ impl Service {
             error: self.error.clone(),
             notice: self.notice.clone(),
             needs_setup: !self.can_fetch(),
-            has_unsplash_key: !unsplash_key.is_empty(),
-            has_pexels_key: !pexels_key.is_empty(),
+            has_unsplash_key: !keys.unsplash.is_empty(),
+            has_pexels_key: !keys.pexels.is_empty(),
             settings: Settings::from_config(&self.config),
             photographer_note: unsplash::photographer_ignored(
                 &self.config.query,
@@ -399,9 +399,12 @@ impl Service {
     /// `text` without the keys: the saved ones and the environment's. A
     /// source's error can quote its reply, and a reply can quote a key.
     fn scrub(&self, text: &str) -> String {
-        let (env_unsplash, env_pexels) = keys(&self.config, true);
-        let (unsplash, pexels) = keys(&self.config, false);
-        net::scrub(text, &[&env_unsplash, &env_pexels, &unsplash, &pexels])
+        let env = self.config.keys(true);
+        let saved = self.config.keys(false);
+        net::scrub(
+            text,
+            &[&env.unsplash, &env.pexels, &saved.unsplash, &saved.pexels],
+        )
     }
 
     fn reload(&mut self) {
@@ -415,7 +418,7 @@ impl Service {
                     self.last_failed_fetch = 0;
                     self.resting.clear();
                 }
-                if keys(&config, self.env_keys) != self.keys() {
+                if config.keys(self.env_keys) != self.keys() {
                     self.last_failed_fetch = 0;
                     self.resting.clear();
                 }
@@ -431,8 +434,8 @@ impl Service {
     /// Whether a source can be asked at all (it has the key it needs).
     fn usable(&self, source: SourceId) -> bool {
         match source {
-            SourceId::Unsplash => !self.keys().0.is_empty(),
-            SourceId::Pexels => !self.keys().1.is_empty(),
+            SourceId::Unsplash => !self.keys().unsplash.is_empty(),
+            SourceId::Pexels => !self.keys().pexels.is_empty(),
             SourceId::Wallhaven | SourceId::Daily | SourceId::Favorites => true,
         }
     }
@@ -558,7 +561,7 @@ impl Service {
     /// Reports a photo that just went on screen (Unsplash's terms) and logs it.
     fn used(&self, photo: &Wallpaper) {
         if photo.source == SourceId::Unsplash && !photo.download_location.is_empty() {
-            let (key, _) = self.keys();
+            let key = self.keys().unsplash;
             if let Err(e) = unsplash::track(&self.http, &key, &photo.download_location) {
                 self.log(&format!("download tracking failed: {e:#}"));
             }
@@ -921,7 +924,7 @@ impl Service {
         let query = self.config.query.clone();
         let batch: Vec<Candidate> = match source {
             SourceId::Unsplash => {
-                let (key, _) = self.keys();
+                let key = self.keys().unsplash;
                 let topics = self.topic_ids(&key)?;
                 unsplash::batch(
                     &self.http,
@@ -933,7 +936,7 @@ impl Service {
                 )?
             }
             SourceId::Pexels => {
-                let (_, key) = self.keys();
+                let key = self.keys().pexels;
                 let random = self.random();
                 let (batch, pages) =
                     pexels::batch(&self.http, &key, &query, self.state.pexels_pages, random)?;
@@ -1100,18 +1103,6 @@ impl Service {
             }
             Err(e) => self.fail(e),
         }
-    }
-}
-
-/// The Unsplash and Pexels keys, from the environment first when `env`.
-fn keys(config: &Config, env: bool) -> (String, String) {
-    if env {
-        (config.effective_key(), config.effective_pexels_key())
-    } else {
-        (
-            config.access_key.trim().to_string(),
-            config.pexels_key.trim().to_string(),
-        )
     }
 }
 
@@ -1366,17 +1357,18 @@ mod tests {
             pexels_key: " px ".into(),
             ..Config::default()
         };
-        assert_eq!(keys(&config, false), ("saved".into(), "px".into()));
+        assert_eq!(config.keys(false).unsplash, "saved");
+        assert_eq!(config.keys(false).pexels, "px");
         // The environment wins, as in the app. Read it, never set it: tests
         // run in parallel and setting it would race them.
-        let (unsplash, pexels) = keys(&config, true);
+        let keys = config.keys(true);
         match std::env::var("UNSPLASH_ACCESS_KEY") {
-            Ok(env) if !env.trim().is_empty() => assert_eq!(unsplash, env.trim()),
-            _ => assert_eq!(unsplash, "saved"),
+            Ok(env) if !env.trim().is_empty() => assert_eq!(keys.unsplash, env.trim()),
+            _ => assert_eq!(keys.unsplash, "saved"),
         }
         match std::env::var("PEXELS_API_KEY") {
-            Ok(env) if !env.trim().is_empty() => assert_eq!(pexels, env.trim()),
-            _ => assert_eq!(pexels, "px"),
+            Ok(env) if !env.trim().is_empty() => assert_eq!(keys.pexels, env.trim()),
+            _ => assert_eq!(keys.pexels, "px"),
         }
     }
 
