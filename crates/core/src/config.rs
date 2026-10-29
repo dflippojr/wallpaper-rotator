@@ -173,4 +173,49 @@ mod tests {
         };
         assert_eq!(config.cache_cap_bytes(), 20 * 1024 * 1024);
     }
+
+    #[test]
+    fn keys_are_trimmed_and_the_environment_wins() {
+        let config = Config {
+            access_key: "  saved\n".into(),
+            pexels_key: " px ".into(),
+            ..Config::default()
+        };
+        assert_eq!(
+            config.keys(false),
+            Keys {
+                unsplash: "saved".into(),
+                pexels: "px".into(),
+            }
+        );
+        // The environment is set on a child process, so this one's environment
+        // and the parallel tests stay as they are.
+        let child = "ROTATOR_KEYS_TEST_CHILD";
+        if std::env::var_os(child).is_some() {
+            assert_eq!(
+                config.keys(true),
+                Keys {
+                    unsplash: "env".into(),
+                    pexels: "env px".into(),
+                }
+            );
+            return;
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "config::tests::keys_are_trimmed_and_the_environment_wins",
+            ])
+            .env(child, "1")
+            .env("UNSPLASH_ACCESS_KEY", "  env\n")
+            .env("PEXELS_API_KEY", " env px ")
+            .output()
+            .unwrap();
+        // A name that matches no test exits 0, so also require that it ran.
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "{stdout}"
+        );
+    }
 }
