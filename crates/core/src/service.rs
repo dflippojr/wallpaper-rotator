@@ -613,12 +613,7 @@ impl Service {
         let photo = match ready {
             Some(photo) => photo,
             None => {
-                let mut used: HashSet<String> = [&self.state.current, &self.state.next]
-                    .into_iter()
-                    .flatten()
-                    .flat_map(|s| &s.photos)
-                    .map(|w| w.id.clone())
-                    .collect();
+                let mut used = ids(self.state.current.iter().chain(&self.state.next));
                 let mut notes = Vec::new();
                 let size = (target.width, target.height);
                 let photo = self.photo_for(size, Some(target.clone()), &mut used, &mut notes)?;
@@ -630,10 +625,7 @@ impl Service {
         };
         let mut set = current;
         set.photos[index] = photo;
-        set.spanned = None;
-        if wallpaper::SPANS_ONE_IMAGE {
-            set = self.stitch(set, &displays)?;
-        }
+        let set = self.restitch(set, &displays)?;
         (self.hooks.apply)(&set.layout())?;
         self.used(&set.photos[index]);
         self.state.current = Some(set);
@@ -660,14 +652,7 @@ impl Service {
         let Some(mut set) = self.state.next.take() else {
             return Ok(());
         };
-        let mut used: HashSet<String> = self
-            .state
-            .current
-            .iter()
-            .chain([&set])
-            .flat_map(|s| &s.photos)
-            .map(|w| w.id.clone())
-            .collect();
+        let mut used = ids(self.state.current.iter().chain([&set]));
         let mut notes = Vec::new();
         for display in displays {
             if set
@@ -693,11 +678,7 @@ impl Service {
                 .position(|d| w.display.as_ref() == Some(d))
                 .unwrap_or(usize::MAX)
         });
-        set.spanned = None;
-        if wallpaper::SPANS_ONE_IMAGE {
-            set = self.stitch(set, displays)?;
-        }
-        self.state.next = Some(set);
+        self.state.next = Some(self.restitch(set, displays)?);
         self.save_state();
         self.cleanup();
         Ok(())
@@ -805,13 +786,7 @@ impl Service {
         order.sort_by_key(|&i| std::cmp::Reverse(u64::from(sizes[i].0) * u64::from(sizes[i].1)));
 
         // Don't show what's already on screen again.
-        let mut used: HashSet<String> = self
-            .state
-            .current
-            .iter()
-            .flat_map(|s| &s.photos)
-            .map(|w| w.id.clone())
-            .collect();
+        let mut used = ids(&self.state.current);
         let mut notes = Vec::new();
         let mut photos: Vec<Option<Wallpaper>> = vec![None; targets.len()];
         for i in order {
@@ -822,8 +797,8 @@ impl Service {
             photos: photos.into_iter().flatten().collect(),
             spanned: None,
         };
-        if each && wallpaper::SPANS_ONE_IMAGE {
-            set = self.stitch(set, displays)?;
+        if each {
+            set = self.restitch(set, displays)?;
         }
         Ok((set, notes))
     }
@@ -892,13 +867,7 @@ impl Service {
             // left: repeat one rather than fail, preferring one that isn't
             // on screen right now.
             let best = best.or_else(|| {
-                let on_screen: HashSet<String> = self
-                    .state
-                    .current
-                    .iter()
-                    .flat_map(|s| &s.photos)
-                    .map(|w| w.id.clone())
-                    .collect();
+                let on_screen = ids(&self.state.current);
                 self.best_queued(source, (width, height), &on_screen)
                     .or_else(|| self.best_queued(source, (width, height), &HashSet::new()))
             });
@@ -1047,6 +1016,15 @@ impl Service {
         Ok(set)
     }
 
+    /// Drops a changed set's stitched image and, on GNOME, stitches it again.
+    fn restitch(&self, mut set: Set, displays: &[Display]) -> Result<Set> {
+        set.spanned = None;
+        if wallpaper::SPANS_ONE_IMAGE {
+            set = self.stitch(set, displays)?;
+        }
+        Ok(set)
+    }
+
     fn favorites_dir(&self) -> PathBuf {
         self.config
             .favorites_dir
@@ -1172,6 +1150,14 @@ fn wallpaper_from(c: Candidate, file: PathBuf, display: Option<Display>) -> Wall
         source: c.source,
         display,
     }
+}
+
+/// The IDs of every photo in `sets`.
+fn ids<'a>(sets: impl IntoIterator<Item = &'a Set>) -> HashSet<String> {
+    sets.into_iter()
+        .flat_map(|s| &s.photos)
+        .map(|w| w.id.clone())
+        .collect()
 }
 
 /// The size that covers every display: the widest width and tallest height.
