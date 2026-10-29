@@ -1360,6 +1360,27 @@ mod tests {
     }
 
     #[test]
+    fn keys_are_trimmed_and_the_environment_wins() {
+        let config = Config {
+            access_key: "  saved\n".into(),
+            pexels_key: " px ".into(),
+            ..Config::default()
+        };
+        assert_eq!(keys(&config, false), ("saved".into(), "px".into()));
+        // The environment wins, as in the app. Read it, never set it: tests
+        // run in parallel and setting it would race them.
+        let (unsplash, pexels) = keys(&config, true);
+        match std::env::var("UNSPLASH_ACCESS_KEY") {
+            Ok(env) if !env.trim().is_empty() => assert_eq!(unsplash, env.trim()),
+            _ => assert_eq!(unsplash, "saved"),
+        }
+        match std::env::var("PEXELS_API_KEY") {
+            Ok(env) if !env.trim().is_empty() => assert_eq!(pexels, env.trim()),
+            _ => assert_eq!(pexels, "px"),
+        }
+    }
+
+    #[test]
     fn coverage_prefers_photos_that_fill_the_display() {
         let monitor = (3840, 2160);
         assert_eq!(coverage((6000, 4000), monitor), 1.0);
