@@ -6,7 +6,7 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
 use super::{Candidate, Image, SourceId};
-use crate::net::{encode, parse, Call, Http};
+use crate::net::{append_query, encode, parse, Call, Http};
 
 /// Appended to Unsplash links, as the API guidelines ask.
 pub const UTM: &str = "utm_source=wallpaper_rotator&utm_medium=referral";
@@ -318,16 +318,14 @@ fn candidate(photo: Photo) -> Candidate {
 /// An imgix URL template that crops the photo to exactly `{w}`x`{h}`, so
 /// the app downloads a screen-sized JPEG instead of the huge original.
 fn sized_url(raw: &str) -> String {
-    let sep = if raw.contains('?') { '&' } else { '?' };
-    format!("{raw}{sep}w={{w}}&h={{h}}&fit=crop&crop=entropy&fm=jpg&q=85")
+    append_query(raw, "w={w}&h={h}&fit=crop&crop=entropy&fm=jpg&q=85")
 }
 
 pub fn with_utm(url: &str) -> String {
     if url.is_empty() || url.contains("utm_source=") {
         return url.to_string();
     }
-    let sep = if url.contains('?') { '&' } else { '?' };
-    format!("{url}{sep}{UTM}")
+    append_query(url, UTM)
 }
 
 #[cfg(test)]

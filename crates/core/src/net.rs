@@ -340,6 +340,20 @@ pub fn encode(s: &str) -> String {
     out
 }
 
+/// Appends `params` to `url`'s query string. The separator is `?` for a
+/// URL with no query, `&` after one, and none after a trailing `?` or `&`.
+/// `params` goes in as given, so `{w}`-style placeholders survive.
+pub fn append_query(url: &str, params: &str) -> String {
+    let sep = if url.ends_with(['?', '&']) {
+        ""
+    } else if url.contains('?') {
+        "&"
+    } else {
+        "?"
+    };
+    format!("{url}{sep}{params}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

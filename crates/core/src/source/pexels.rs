@@ -6,7 +6,7 @@ use anyhow::{bail, Result};
 use serde::Deserialize;
 
 use super::{Candidate, Image, SourceId};
-use crate::net::{encode, parse, Call, Http};
+use crate::net::{append_query, encode, parse, Call, Http};
 
 pub const BATCH: u32 = 40;
 /// Pexels serves search results this deep at most.
@@ -86,11 +86,6 @@ pub fn parse_batch(body: &str) -> Result<(Vec<Candidate>, u64)> {
 }
 
 fn candidate(photo: Photo) -> Candidate {
-    let sep = if photo.src.original.contains('?') {
-        '&'
-    } else {
-        '?'
-    };
     Candidate {
         source: SourceId::Pexels,
         id: photo.id.to_string(),
@@ -104,9 +99,9 @@ fn candidate(photo: Photo) -> Candidate {
         description: photo.alt.filter(|a| !a.trim().is_empty()),
         color: photo.avg_color,
         image: Image::Sized {
-            url: format!(
-                "{}{sep}auto=compress&cs=tinysrgb&fit=crop&w={{w}}&h={{h}}",
-                photo.src.original
+            url: append_query(
+                &photo.src.original,
+                "auto=compress&cs=tinysrgb&fit=crop&w={w}&h={h}",
             ),
         },
         track_url: None,
