@@ -284,6 +284,56 @@ fn per_display_refresh_changes_only_that_display() {
 }
 
 #[test]
+fn per_display_refresh_without_a_ready_photo_skips_current_and_prefetched() {
+    // Favorites cover only half of the second display, so every pick for it
+    // refills the queue with the photos already in use.
+    let screens = vec![screen("1", 120, 80), screen("2", 600, 400)];
+    let mut w = World::new(
+        Config {
+            per_display: true,
+            ..config(&[SourceId::Favorites])
+        },
+        screens,
+    );
+    w.add_favorites(&["Ann - a1.png", "Bo - b2.png", "Cy - c3.png", "Di - d4.png"]);
+    w.run(Command::Next(None));
+    let before = w.state();
+    let current = before.current.clone().unwrap();
+    let next = before.next.clone().expect("a set is prefetched");
+    assert_eq!((current.photos.len(), next.photos.len()), (2, 2));
+    // The second display's prefetched photo is gone from the cache, and the
+    // only unused favorite fits that display worse than the ones in use.
+    let lost = next
+        .photos
+        .iter()
+        .find(|p| p.display.as_ref().unwrap().id == "2")
+        .unwrap();
+    fs::remove_file(&lost.file).unwrap();
+    image::RgbImage::from_pixel(150, 100, image::Rgb([200, 60, 10]))
+        .save(w.favorites_dir().join("Fay - f6.png"))
+        .unwrap();
+
+    let snap = w.run(Command::Next(Some(1)));
+
+    assert_eq!(snap.error, None);
+    let after = w.state().current.unwrap();
+    assert_eq!(after.photos[0], current.photos[0]);
+    let in_use: Vec<&str> = current
+        .photos
+        .iter()
+        .chain(&next.photos)
+        .map(|p| p.id.as_str())
+        .collect();
+    let replaced = &after.photos[1];
+    assert!(
+        replaced.id.contains("f6"),
+        "{} was picked over the unused favorite; in use: {in_use:?}",
+        replaced.id
+    );
+    assert_eq!(image::image_dimensions(&replaced.file).unwrap(), (600, 400));
+}
+
+#[test]
 fn display_hotplug_re_places_the_current_photos() {
     let mut w = World::new(config(&[SourceId::Favorites]), vec![screen("1", 100, 100)]);
     w.add_favorites(&["Ann - a1.png", "Bo - b2.png"]);
