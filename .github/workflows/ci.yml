@@ -25,7 +25,7 @@ env:
   # only goes up: raise it when coverage rises, never lower it to get a PR
   # through.
   # scripts/check.sh reads this value.
-  COVERAGE_FLOOR: 83.07
+  COVERAGE_FLOOR: 84.26
 
 jobs:
   test:
