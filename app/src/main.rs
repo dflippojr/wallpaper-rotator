@@ -13,6 +13,7 @@ use rotator_core::config::Config;
 use rotator_core::log;
 use rotator_core::paths::Paths;
 use rotator_core::service::{Command, Hooks, Service, Settings, Snapshot, WallpaperView};
+use rotator_core::source::SourceId;
 use rotator_core::wallpaper::{self, Display, Layout};
 use tauri::image::Image;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
@@ -340,22 +341,47 @@ fn refresh_tray(app: &AppHandle, snapshot: &Snapshot) {
 
 /// The tray tooltip: who took the current photos and where they came from.
 fn tray_tooltip(photos: &[WallpaperView]) -> String {
-    match photos {
-        [] => "Wallpaper Rotator".into(),
-        photos => {
-            let mut authors: Vec<&str> = photos.iter().map(|w| w.author.as_str()).collect();
-            authors.dedup();
-            let noun = if authors.len() == 1 {
-                "Photo"
-            } else {
-                "Photos"
-            };
-            format!(
-                "Wallpaper Rotator\n{noun} by {} on Unsplash",
-                authors.join(", ")
-            )
+    if photos.is_empty() {
+        return "Wallpaper Rotator".into();
+    }
+    let mut sources: Vec<&str> = Vec::new();
+    for photo in photos {
+        if !sources.contains(&photo.source.as_str()) {
+            sources.push(&photo.source);
         }
     }
+    let mut authors: Vec<&str> = photos
+        .iter()
+        .filter(|w| !anonymous(&w.source))
+        .map(|w| w.author.as_str())
+        .collect();
+    authors.dedup();
+    let line = if authors.is_empty() {
+        let noun = if sources.len() == 1 {
+            "Photo"
+        } else {
+            "Photos"
+        };
+        format!("{noun} from {}", sources.join(" and "))
+    } else {
+        let noun = if authors.len() == 1 {
+            "Photo"
+        } else {
+            "Photos"
+        };
+        format!(
+            "{noun} by {} on {}",
+            authors.join(", "),
+            sources.join(" and ")
+        )
+    };
+    format!("Wallpaper Rotator\n{line}")
+}
+
+/// Wallhaven's author is the site and a favorite's author comes from its file
+/// name, so these photos name their source instead of a photographer.
+fn anonymous(source: &str) -> bool {
+    source == SourceId::Wallhaven.name() || source == SourceId::Favorites.name()
 }
 
 #[cfg(target_os = "macos")]
@@ -541,6 +567,34 @@ mod tests {
         assert_eq!(
             tray_tooltip(&[photo("Ann", "Pexels")]),
             "Wallpaper Rotator\nPhoto by Ann on Pexels"
+        );
+    }
+
+    #[test]
+    fn tray_tooltip_lists_each_provider_once() {
+        assert_eq!(
+            tray_tooltip(&[
+                photo("Ann", "Unsplash"),
+                photo("Bo", "Pexels"),
+                photo("Cy", "Unsplash"),
+            ]),
+            "Wallpaper Rotator\nPhotos by Ann, Bo, Cy on Unsplash and Pexels"
+        );
+    }
+
+    #[test]
+    fn tray_tooltip_names_the_site_for_wallhaven_and_favorites() {
+        assert_eq!(
+            tray_tooltip(&[photo("Wallhaven", "Wallhaven")]),
+            "Wallpaper Rotator\nPhoto from Wallhaven"
+        );
+        assert_eq!(
+            tray_tooltip(&[photo("sunset", "Favorites")]),
+            "Wallpaper Rotator\nPhoto from Favorites"
+        );
+        assert_eq!(
+            tray_tooltip(&[photo("Ann", "Unsplash"), photo("Wallhaven", "Wallhaven")]),
+            "Wallpaper Rotator\nPhoto by Ann on Unsplash and Wallhaven"
         );
     }
 }
