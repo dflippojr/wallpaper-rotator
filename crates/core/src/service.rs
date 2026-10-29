@@ -18,7 +18,7 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Serialize;
 
-use crate::config::{Config, Keys};
+use crate::config::{Config, Keys, MIN_CACHE_MB};
 use crate::net::{self, Http};
 use crate::paths::Paths;
 use crate::source::{self, daily, favorites, pexels, unsplash, wallhaven, Candidate, SourceId};
@@ -189,7 +189,7 @@ impl Settings {
             .collect();
         config.interval_minutes = self.interval_minutes;
         config.paused = self.paused;
-        config.cache_cap_mb = self.cache_cap_mb.max(20);
+        config.cache_cap_mb = self.cache_cap_mb.max(MIN_CACHE_MB);
         config.start_at_login = self.start_at_login;
         config.per_display = self.per_display;
         config.sources = SourceId::ALL

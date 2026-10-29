@@ -6,6 +6,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::source::SourceId;
 
+/// The smallest image cache, in megabytes. `ui/app.js` and `ui/index.html`
+/// repeat it for the settings form, which can't import it.
+pub const MIN_CACHE_MB: u64 = 20;
+
 /// User settings, stored as TOML in the platform config folder.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -91,7 +95,7 @@ impl Config {
     }
 
     pub fn cache_cap_bytes(&self) -> u64 {
-        self.cache_cap_mb.max(20) * 1024 * 1024
+        self.cache_cap_mb.max(MIN_CACHE_MB) * 1024 * 1024
     }
 
     /// The settings that shape fetched photos; prefetched photos are dropped
