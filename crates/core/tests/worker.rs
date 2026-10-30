@@ -11,6 +11,7 @@ use std::sync::atomic::Ordering;
 
 use common::stub_api::Route;
 use common::{config, screen, World, PEXELS_KEY, UNSPLASH_KEY};
+use image::{Rgb, RgbImage};
 use rotator_core::config::Config;
 use rotator_core::service::Command;
 use rotator_core::source::SourceId;
@@ -913,4 +914,83 @@ fn a_display_change_before_the_next_tick_resumes_prefetching() {
         .expect("a set is prefetched for both displays");
     assert_eq!(next.photos.len(), 2);
     assert!(next.on_disk());
+}
+
+/// Whether `file` is mostly red, not mostly blue. JPEG shifts the exact values.
+fn is_red(file: &Path) -> bool {
+    let image = image::open(file).unwrap().to_rgb8();
+    let [r, _, b] = image.get_pixel(0, 0).0;
+    r > b
+}
+
+/// Two displays of one size, each with its own favorite.
+fn two_displays_of_favorites(names: [&str; 2]) -> World {
+    let mut s2 = screen("2", 160, 90);
+    s2.x = 160;
+    let w = World::new(
+        Config {
+            per_display: true,
+            ..config(&[SourceId::Favorites])
+        },
+        vec![screen("1", 160, 90), s2],
+    );
+    let dir = w.favorites_dir();
+    fs::create_dir_all(&dir).unwrap();
+    RgbImage::from_pixel(300, 200, Rgb([250, 0, 0]))
+        .save(dir.join(names[0]))
+        .unwrap();
+    RgbImage::from_pixel(300, 200, Rgb([0, 0, 250]))
+        .save(dir.join(names[1]))
+        .unwrap();
+    w
+}
+
+#[test]
+fn favorites_with_similar_names_get_their_own_cache_files() {
+    let mut w = two_displays_of_favorites(["trip (1).png", "trip [1].png"]);
+    w.run(Command::Next(None));
+    let state = w.state();
+    let cur = state.current.unwrap();
+    assert_ne!(
+        cur.photos[0].file, cur.photos[1].file,
+        "two photos, one file"
+    );
+    for photo in &cur.photos {
+        let red = photo.id.contains("(1)");
+        assert_eq!(
+            is_red(&photo.file),
+            red,
+            "{} has the wrong pixels",
+            photo.id
+        );
+    }
+    // Still only what's on screen and what's next, stitched or not.
+    let mut kept: Vec<_> = [&cur]
+        .into_iter()
+        .chain(&state.next)
+        .flat_map(|s| s.files())
+        .map(Path::to_path_buf)
+        .collect();
+    kept.sort();
+    kept.dedup();
+    assert_eq!(w.cached_files(), kept);
+}
+
+#[test]
+fn favorites_differing_only_by_extension_are_two_candidates() {
+    let mut w = two_displays_of_favorites(["sunset.jpg", "sunset.png"]);
+    w.run(Command::Next(None));
+    let cur = w.state().current.unwrap();
+    let mut ids: Vec<&str> = cur.photos.iter().map(|p| p.id.as_str()).collect();
+    ids.sort_unstable();
+    assert_eq!(ids, ["fav-sunset.jpg", "fav-sunset.png"]);
+    assert_ne!(cur.photos[0].file, cur.photos[1].file);
+    for photo in &cur.photos {
+        assert_eq!(
+            is_red(&photo.file),
+            photo.id.ends_with(".jpg"),
+            "{}",
+            photo.id
+        );
+    }
 }
