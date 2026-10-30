@@ -237,6 +237,11 @@ pub struct Service {
     error: Option<String>,
     notice: Option<String>,
     last_failed_fetch: u64,
+    /// The displays for which the cache cap had to drop a prefetched set.
+    /// Prefetching waits until the cap, the sources or the displays
+    /// change; without this, every tick would download a set only to
+    /// delete it again.
+    prefetch_over_cap: Option<Vec<Display>>,
     /// Sources resting after an error, until this time.
     resting: HashMap<SourceId, u64>,
     rng: u64,
@@ -275,6 +280,7 @@ impl Service {
             error: None,
             notice: None,
             last_failed_fetch: 0,
+            prefetch_over_cap: None,
             resting: HashMap::new(),
             rng: seed | 1,
             env_keys,
@@ -426,6 +432,10 @@ impl Service {
                     self.state.pexels_pages = None;
                     self.last_failed_fetch = 0;
                     self.resting.clear();
+                    self.prefetch_over_cap = None;
+                }
+                if config.cache_cap_mb != self.config.cache_cap_mb {
+                    self.prefetch_over_cap = None;
                 }
                 if config.keys(self.env_keys) != self.keys() {
                     self.last_failed_fetch = 0;
@@ -701,6 +711,14 @@ impl Service {
             return;
         }
         let displays = self.live_displays();
+        // Compared here, not when displays change: `Next` can update the
+        // display list before a tick notices the change. A pause for other
+        // displays is over for good, even if that layout comes back.
+        match &self.prefetch_over_cap {
+            Some(paused) if *paused == displays => return,
+            Some(_) => self.prefetch_over_cap = None,
+            None => {}
+        }
         let each = self.each(&displays);
         if each {
             if let Err(e) = self.top_up_next(&displays) {
@@ -1108,6 +1126,12 @@ impl Service {
                 }
                 if report.dropped_next {
                     self.save_state();
+                    if self.prefetch_over_cap.as_ref() != Some(&self.displays) {
+                        self.prefetch_over_cap = Some(self.displays.clone());
+                        self.log(
+                            "prefetch paused: the cache cap is too small for a prefetched photo",
+                        );
+                    }
                 }
             }
             Err(e) => self.fail(e),
