@@ -335,9 +335,12 @@ impl Service {
                 self.handle(Command::Tick);
             }
             Command::SetPaused(paused) => {
-                self.config.paused = paused;
-                if let Err(e) = self.config.save(&self.paths.config_file) {
-                    self.fail(e);
+                // The settings screen writes the file too, and may have saved
+                // since this was queued: change only `paused` on disk, then
+                // adopt the file, so its settings aren't lost.
+                match self.save_paused(paused) {
+                    Ok(()) => self.reload(),
+                    Err(e) => self.fail(e),
                 }
                 self.publish();
             }
@@ -411,6 +414,12 @@ impl Service {
             text,
             &[&env.unsplash, &env.pexels, &saved.unsplash, &saved.pexels],
         )
+    }
+
+    fn save_paused(&self, paused: bool) -> Result<()> {
+        let mut config = Config::load_or_create(&self.paths.config_file)?;
+        config.paused = paused;
+        config.save(&self.paths.config_file)
     }
 
     fn reload(&mut self) {
