@@ -64,21 +64,66 @@ pub fn batch(dir: &Path) -> Result<Vec<Candidate>> {
     Ok(out)
 }
 
+/// The file stem a saved favorite gets, from its already safe author and id:
+/// "{author} - {source}-{id}", or "{author} - {id}" for Unsplash, which kept
+/// the name it had before other sources existed. [`credit`] reads it back.
+pub fn stem(source: SourceId, author: &str, id: &str) -> String {
+    match source {
+        SourceId::Unsplash => format!("{author} - {id}"),
+        other => format!("{author} - {}-{id}", other.key()),
+    }
+}
+
 /// The author and a link back to the photo's page, from a saved file name.
+/// A name the app didn't write, such as the user's own "Paris - Eiffel
+/// tower", has no link and the whole stem as its author.
 fn credit(stem: &str) -> (String, String) {
-    let Some((author, id)) = stem.rsplit_once(" - ") else {
-        return (stem.to_string(), String::new());
-    };
-    let link = match id.split_once('-') {
-        Some(("pexels", id)) => format!("https://www.pexels.com/photo/{id}/"),
-        Some(("wallhaven", id)) => format!("https://wallhaven.cc/w/{id}"),
-        // Picture-of-the-day ids aren't links.
-        Some(("daily", _)) => String::new(),
-        // Older favorites were all Unsplash, named "{author} - {id}".
-        Some(("unsplash", id)) => format!("https://unsplash.com/photos/{id}"),
-        _ => format!("https://unsplash.com/photos/{id}"),
-    };
-    (author.to_string(), link)
+    match saved_as(stem) {
+        Some((author, source, id)) => {
+            let link = match source {
+                SourceId::Unsplash => format!("https://unsplash.com/photos/{id}"),
+                SourceId::Pexels => format!("https://www.pexels.com/photo/{id}/"),
+                SourceId::Wallhaven => format!("https://wallhaven.cc/w/{id}"),
+                // Picture-of-the-day ids aren't links.
+                SourceId::Daily | SourceId::Favorites => String::new(),
+            };
+            (author.to_string(), link)
+        }
+        None => (stem.to_string(), String::new()),
+    }
+}
+
+/// The author, source and id of a name [`stem`] wrote. Authors may contain
+/// " - " and so may picture-of-the-day ids, so this splits at the first
+/// " - " followed by a source prefix, and only takes the older Unsplash
+/// form when its id looks like an Unsplash photo id.
+fn saved_as(stem: &str) -> Option<(&str, SourceId, &str)> {
+    for (i, sep) in stem.match_indices(" - ") {
+        let (author, rest) = (&stem[..i], &stem[i + sep.len()..]);
+        let Some((key, id)) = rest.split_once('-') else {
+            continue;
+        };
+        let source = match key {
+            "unsplash" => SourceId::Unsplash,
+            "pexels" => SourceId::Pexels,
+            "wallhaven" => SourceId::Wallhaven,
+            "daily" => return Some((author, SourceId::Daily, id)),
+            _ => continue,
+        };
+        if is_link_id(id) {
+            return Some((author, source, id));
+        }
+    }
+    let (author, id) = stem.rsplit_once(" - ")?;
+    (id.len() == 11 && is_link_id(id)).then_some((author, SourceId::Unsplash, id))
+}
+
+/// Ids that go into a link as they are: `[A-Za-z0-9_-]+`.
+fn is_link_id(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 #[cfg(test)]
@@ -89,14 +134,17 @@ mod tests {
     #[test]
     fn lists_images_and_rebuilds_credit() {
         let dir = tempfile::tempdir().unwrap();
-        png(dir.path(), "Ann Lee - abc123.png", 40, 30);
+        png(dir.path(), "Ann Lee - abc123DEF45.png", 40, 30);
         png(dir.path(), "Bo - pexels-417074.png", 40, 30);
         fs::write(dir.path().join("notes.txt"), "x").unwrap();
         fs::write(dir.path().join("broken.jpg"), "not an image").unwrap();
         let photos = batch(dir.path()).unwrap();
         assert_eq!(photos.len(), 2);
         assert_eq!(photos[0].author, "Ann Lee");
-        assert_eq!(photos[0].photo_url, "https://unsplash.com/photos/abc123");
+        assert_eq!(
+            photos[0].photo_url,
+            "https://unsplash.com/photos/abc123DEF45"
+        );
         assert_eq!(photos[1].photo_url, "https://www.pexels.com/photo/417074/");
         assert_eq!((photos[0].width, photos[0].height), (40, 30));
     }
@@ -131,6 +179,61 @@ mod tests {
             credit("A - daily-commons-Paris - Eiffel Tower.jpg"),
             ("A".into(), String::new())
         );
+    }
+
+    /// The class behind #61: `credit` must agree with the name `stem`
+    /// writes, and nothing else. Every name built from these pieces either
+    /// reads back as a save `stem` would write, with a link that is a valid
+    /// URL path, or gets no link and the whole stem as its author.
+    #[test]
+    fn credit_links_only_names_the_app_writes() {
+        let authors = ["Ann", "Ann Lee", "Jean - Luc", "Paris - pexels", "photo"];
+        let ids = [
+            (SourceId::Unsplash, "abc123DEF45"),
+            (SourceId::Unsplash, "I-B7DT1Sfu8"),
+            (SourceId::Pexels, "417074"),
+            (SourceId::Wallhaven, "d5wlmj"),
+            (SourceId::Daily, "bing-x"),
+            (SourceId::Daily, "commons-Paris - Eiffel Tower.jpg"),
+        ];
+        for author in authors {
+            for (source, id) in ids {
+                let name = stem(source, author, id);
+                assert_eq!(saved_as(&name), Some((author, source, id)), "{name}");
+            }
+        }
+
+        let pieces = [
+            "Paris",
+            "Eiffel tower",
+            "abc123DEF45",
+            "pexels-1",
+            "pexels-my trip",
+            "wallhaven-a b",
+            "unsplash-",
+            "daily-x",
+            "x.jpg",
+            "",
+        ];
+        for a in pieces {
+            for b in pieces {
+                for c in ["", " - Eiffel", " - abc123DEF45", " - pexels-2"] {
+                    let name = format!("{a} - {b}{c}");
+                    let (author, link) = credit(&name);
+                    match saved_as(&name) {
+                        Some((who, source, id)) => {
+                            assert_eq!(stem(source, who, id), name);
+                            assert_eq!(author, who);
+                        }
+                        None => assert_eq!((author.as_str(), link.as_str()), (name.as_str(), "")),
+                    }
+                    assert!(
+                        !link.contains(char::is_whitespace),
+                        "{name} gave the link {link}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

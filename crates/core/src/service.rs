@@ -1058,12 +1058,12 @@ impl Service {
         fs::create_dir_all(&dir).with_context(|| format!("could not create {}", dir.display()))?;
         let mut saved = Vec::new();
         for photo in photos {
-            // Unsplash favorites keep the original "{author} - {id}" name.
-            let id = match photo.source {
-                SourceId::Unsplash => safe_name(&photo.id),
-                other => format!("{}-{}", other.key(), safe_name(&photo.id)),
-            };
-            let dest = dir.join(format!("{} - {id}.jpg", safe_name(&photo.author)));
+            let stem = favorites::stem(
+                photo.source,
+                &safe_name(&photo.author),
+                &safe_name(&photo.id),
+            );
+            let dest = dir.join(format!("{stem}.jpg"));
             if !dest.exists() {
                 fs::copy(&photo.file, &dest).context("could not copy the wallpaper")?;
             }
