@@ -737,7 +737,7 @@ fn ticks_between_rotations_never_download_or_delete() {
 fn a_display_change_before_the_next_tick_resumes_prefetching() {
     let mut w = World::new(
         Config {
-            cache_cap_mb: 30,
+            cache_cap_mb: 40,
             per_display: true,
             ..config(&[SourceId::Unsplash])
         },
@@ -748,7 +748,7 @@ fn a_display_change_before_the_next_tick_resumes_prefetching() {
         }],
     );
     w.api.pad_images(HEAVY);
-    // Two 22 MB sets don't fit under 30 MB, so prefetching pauses.
+    // Two 22 MB sets don't fit under 40 MB, so prefetching pauses.
     w.run(Command::Next(None));
     assert!(w.state().next.is_none());
 
@@ -761,4 +761,19 @@ fn a_display_change_before_the_next_tick_resumes_prefetching() {
         w.state().next.is_some_and(|s| s.on_disk()),
         "prefetching resumes for the new layout"
     );
+
+    // Plug it back in: the 11 MB current photo and a 22 MB prefetch fit,
+    // so the old pause must not come back with the old layout.
+    w.screens.lock().unwrap().push({
+        let mut s = screen("2", 160, 90);
+        s.x = 160;
+        s
+    });
+    w.run(Command::Tick);
+    let next = w
+        .state()
+        .next
+        .expect("a set is prefetched for both displays");
+    assert_eq!(next.photos.len(), 2);
+    assert!(next.on_disk());
 }
