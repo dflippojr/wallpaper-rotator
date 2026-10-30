@@ -669,8 +669,8 @@ fn pause_and_resume_persist_and_show_in_the_snapshot() {
     assert!(snap.next_rotation_at.is_some());
 }
 
-/// Every command, so a new one has to be added to the test below. The
-/// match fails to compile when a variant is missing.
+/// Every command, for the test below. A new variant makes the match fail to
+/// compile, which points whoever adds it here; add it to `all` too.
 fn every_command() -> Vec<Command> {
     let all = vec![
         Command::Tick,
