@@ -115,6 +115,8 @@ struct Shared {
     statuses: HashMap<Route, u16>,
     bodies: HashMap<Route, String>,
     requests: Vec<Request>,
+    /// Bytes added after every image's end marker.
+    image_padding: usize,
 }
 
 pub struct StubApi {
@@ -182,6 +184,13 @@ impl StubApi {
             .insert(route, body.to_string());
     }
 
+    /// Pads every image with `bytes` after its end marker from now on, so
+    /// a tiny photo weighs as much as a large one on disk.
+    #[allow(dead_code)] // Used by the worker journeys, not tests/probe.rs.
+    pub fn pad_images(&self, bytes: usize) {
+        self.shared.lock().unwrap().image_padding = bytes;
+    }
+
     /// Every request so far, oldest first.
     pub fn requests(&self) -> Vec<Request> {
         self.shared.lock().unwrap().requests.clone()
@@ -241,12 +250,13 @@ fn serve(stream: TcpStream, addr: &str, shared: &Mutex<Shared>) -> std::io::Resu
         headers,
         route,
     };
-    let (status, body) = {
+    let (status, body, padding) = {
         let mut shared = shared.lock().unwrap();
         shared.requests.push(request.clone());
         (
             shared.statuses.get(&route).copied().unwrap_or(200),
             shared.bodies.get(&route).cloned(),
+            shared.image_padding,
         )
     };
 
@@ -263,7 +273,9 @@ fn serve(stream: TcpStream, addr: &str, shared: &Mutex<Shared>) -> std::io::Resu
             rewrite(&read_fixture(fixture), addr).into_bytes(),
         )
     } else {
-        ("image/jpeg", jpeg(image_size(&request)))
+        let mut image = jpeg(image_size(&request));
+        image.resize(image.len() + padding, 0);
+        ("image/jpeg", image)
     };
     let mut stream = stream;
     write!(
