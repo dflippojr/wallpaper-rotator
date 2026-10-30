@@ -109,7 +109,6 @@ fn saved_as(stem: &str) -> Option<(&str, SourceId, &str)> {
     let linked = splits().find_map(|(author, rest)| {
         let (key, id) = rest.split_once('-')?;
         let source = match key {
-            "unsplash" => SourceId::Unsplash,
             "pexels" => SourceId::Pexels,
             "wallhaven" => SourceId::Wallhaven,
             _ => return None,
@@ -195,6 +194,11 @@ mod tests {
             credit("A - daily-commons-Paris - Eiffel Tower.jpg"),
             ("A".into(), String::new())
         );
+        // The app never writes "unsplash-": Unsplash saves are "{author} - {id}".
+        assert_eq!(
+            credit("Ann - unsplash-abc123DEF45"),
+            ("Ann - unsplash-abc123DEF45".into(), String::new())
+        );
     }
 
     /// The class behind #61: `credit` must agree with the name `stem`
@@ -238,6 +242,7 @@ mod tests {
             "daily-life",
             "daily-bing-x",
             "unsplash-",
+            "unsplash-abc123DEF45",
             "daily-x",
             "x.jpg",
             "",
