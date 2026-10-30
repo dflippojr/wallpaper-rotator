@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 
 use crate::config::{Config, Keys, MIN_CACHE_MB};
 use crate::net::{self, Http};
@@ -40,8 +41,9 @@ const GOOD_ENOUGH: f64 = 0.75;
 const TRIES_PER_SOURCE: usize = 3;
 /// Queued candidates kept per source.
 const QUEUE_LIMIT: usize = 120;
-/// How much of `safe_name` a cache file name keeps, leaving room for the rest.
-const CACHE_NAME_CHARS: usize = 60;
+/// How much of `safe_name` a cache file name keeps. Even in 4-byte characters
+/// this leaves the name, with its hash and size, under the usual 255 bytes.
+const CACHE_NAME_CHARS: usize = 40;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
@@ -1216,17 +1218,16 @@ fn safe_name(s: &str) -> String {
 }
 
 /// The start of a cache file name, unique per ID: `safe_name` alone maps
-/// different IDs to one name, so a hash of the whole ID follows it.
+/// different IDs to one name, so 128 bits of a hash of the whole ID follow it.
+/// A cryptographic hash, because shorter or simpler ones have file names that
+/// collide, and a collision puts one photo in another's file.
 fn cache_stem(id: &str) -> String {
     let readable: String = safe_name(id).chars().take(CACHE_NAME_CHARS).collect();
-    format!("{readable}-{:08x}", fnv1a(id))
-}
-
-/// 32-bit FNV-1a: short, and unlike `DefaultHasher` the same in every release.
-fn fnv1a(s: &str) -> u32 {
-    s.bytes().fold(0x811c_9dc5, |hash, byte| {
-        (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
-    })
+    let hash: String = Sha256::digest(id)[..16]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    format!("{readable}-{hash}")
 }
 
 #[cfg(test)]
@@ -1436,9 +1437,12 @@ mod tests {
 
     #[test]
     fn cache_stems_stay_readable_and_portable() {
-        assert_eq!(cache_stem("fav-trip (1).png"), "fav-trip _1_.png-4da7fcf5");
+        assert_eq!(
+            cache_stem("fav-trip (1).png"),
+            "fav-trip _1_.png-82654e14180148620f71ce0453b44ab3"
+        );
         let long = cache_stem(&"é/".repeat(200));
-        assert_eq!(long.chars().count(), CACHE_NAME_CHARS + 9);
+        assert_eq!(long.chars().count(), CACHE_NAME_CHARS + 33);
         assert!(long
             .chars()
             .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | ' ' | '.')));
