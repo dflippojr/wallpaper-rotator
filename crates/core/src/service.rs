@@ -40,6 +40,8 @@ const GOOD_ENOUGH: f64 = 0.75;
 const TRIES_PER_SOURCE: usize = 3;
 /// Queued candidates kept per source.
 const QUEUE_LIMIT: usize = 120;
+/// How much of `safe_name` a cache file name keeps, leaving room for the rest.
+const CACHE_NAME_CHARS: usize = 60;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
@@ -902,10 +904,10 @@ impl Service {
                 .map(|q| q.remove(index))
                 .context("queue changed")?;
             used.insert(candidate.id.clone());
-            let file = self
-                .paths
-                .images_dir
-                .join(format!("{}-{width}x{height}.jpg", safe_name(&candidate.id)));
+            let file = self.paths.images_dir.join(format!(
+                "{}-{width}x{height}.jpg",
+                cache_stem(&candidate.id)
+            ));
             match source::fetch_image(&self.http, &candidate, width, height, &file) {
                 Ok(()) => return Ok(wallpaper_from(candidate, file, display.clone())),
                 Err(e) => {
@@ -1031,7 +1033,7 @@ impl Service {
         let dest = self
             .paths
             .images_dir
-            .join(format!("span-{}-{}.jpg", safe_name(first), now()));
+            .join(format!("span-{}-{}.jpg", cache_stem(first), now()));
         wallpaper::compose(&parts, &dest)?;
         set.spanned = Some(dest);
         Ok(set)
@@ -1211,6 +1213,20 @@ fn safe_name(s: &str) -> String {
     } else {
         trimmed.chars().take(80).collect()
     }
+}
+
+/// The start of a cache file name, unique per ID: `safe_name` alone maps
+/// different IDs to one name, so a hash of the whole ID follows it.
+fn cache_stem(id: &str) -> String {
+    let readable: String = safe_name(id).chars().take(CACHE_NAME_CHARS).collect();
+    format!("{readable}-{:08x}", fnv1a(id))
+}
+
+/// 32-bit FNV-1a: short, and unlike `DefaultHasher` the same in every release.
+fn fnv1a(s: &str) -> u32 {
+    s.bytes().fold(0x811c_9dc5, |hash, byte| {
+        (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
+    })
 }
 
 #[cfg(test)]
@@ -1416,5 +1432,50 @@ mod tests {
         assert_eq!(safe_name("Ann / Lee"), "Ann _ Lee");
         assert_eq!(safe_name("../.."), "_");
         assert_eq!(safe_name("..."), "photo");
+    }
+
+    #[test]
+    fn cache_stems_stay_readable_and_portable() {
+        assert_eq!(cache_stem("fav-trip (1).png"), "fav-trip _1_.png-4da7fcf5");
+        let long = cache_stem(&"é/".repeat(200));
+        assert_eq!(long.chars().count(), CACHE_NAME_CHARS + 9);
+        assert!(long
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | ' ' | '.')));
+    }
+
+    #[test]
+    fn ids_differing_in_replaced_characters_or_after_80_get_their_own_cache_names() {
+        assert_ne!(cache_stem("fav-trip (1)"), cache_stem("fav-trip [1]"));
+        let long = "x".repeat(80);
+        assert_ne!(
+            cache_stem(&format!("{long}a")),
+            cache_stem(&format!("{long}b"))
+        );
+    }
+
+    /// The class of bug behind #59: `safe_name` is lossy, so it must never be
+    /// all that tells two IDs apart. Every string over the characters it
+    /// conflates or trims, alone and past the 80 characters it keeps, must
+    /// still give its own cache name.
+    #[test]
+    fn every_id_safe_name_conflates_gets_its_own_cache_name() {
+        const LOSSY: [char; 6] = ['(', '[', '_', '/', '.', ' '];
+        let mut suffixes = vec![String::new()];
+        let mut last = suffixes.clone();
+        for _ in 0..5 {
+            last = last
+                .iter()
+                .flat_map(|s| LOSSY.iter().map(move |c| format!("{s}{c}")))
+                .collect();
+            suffixes.extend(last.iter().cloned());
+        }
+        for prefix in ["fav-", "a".repeat(80).as_str()] {
+            let mut seen = HashSet::new();
+            for suffix in &suffixes {
+                let id = format!("{prefix}{suffix}");
+                assert!(seen.insert(cache_stem(&id)), "{id:?} shares a cache name");
+            }
+        }
     }
 }

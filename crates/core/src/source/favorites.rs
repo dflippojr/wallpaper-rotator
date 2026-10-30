@@ -33,7 +33,10 @@ pub fn batch(dir: &Path) -> Result<Vec<Candidate>> {
         if !path.is_file() || !EXTENSIONS.contains(&ext.as_str()) {
             continue;
         }
-        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+        let (Some(name), Some(stem)) = (
+            path.file_name().and_then(|s| s.to_str()),
+            path.file_stem().and_then(|s| s.to_str()),
+        ) else {
             continue;
         };
         // Header only; skip anything that isn't a readable image.
@@ -43,7 +46,8 @@ pub fn batch(dir: &Path) -> Result<Vec<Candidate>> {
         let (author, link) = credit(stem);
         out.push(Candidate {
             source: SourceId::Favorites,
-            id: format!("fav-{stem}"),
+            // The whole file name: "a.jpg" and "a.png" are two photos.
+            id: format!("fav-{name}"),
             width,
             height,
             author,
@@ -99,6 +103,26 @@ mod tests {
         assert_eq!(photos[0].photo_url, "https://unsplash.com/photos/abc123");
         assert_eq!(photos[1].photo_url, "https://www.pexels.com/photo/417074/");
         assert_eq!((photos[0].width, photos[0].height), (40, 30));
+    }
+
+    #[test]
+    fn every_file_gets_its_own_id() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["sunset.jpg", "sunset.png", "a (1).png", "a [1].png"] {
+            png(dir.path(), name, 40, 30);
+        }
+        let photos = batch(dir.path()).unwrap();
+        let ids: Vec<&str> = photos.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "fav-a (1).png",
+                "fav-a [1].png",
+                "fav-sunset.jpg",
+                "fav-sunset.png"
+            ]
+        );
+        assert_eq!(photos[2].author, "sunset");
     }
 
     #[test]

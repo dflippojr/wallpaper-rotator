@@ -827,12 +827,12 @@ fn favorites_with_similar_names_get_their_own_cache_files() {
             photo.id
         );
     }
-    // Still only what's on screen and what's next.
-    let mut kept: Vec<_> = cur
-        .photos
-        .iter()
-        .chain(state.next.iter().flat_map(|s| &s.photos))
-        .map(|p| p.file.clone())
+    // Still only what's on screen and what's next, stitched or not.
+    let mut kept: Vec<_> = [&cur]
+        .into_iter()
+        .chain(&state.next)
+        .flat_map(|s| s.files())
+        .map(Path::to_path_buf)
         .collect();
     kept.sort();
     kept.dedup();

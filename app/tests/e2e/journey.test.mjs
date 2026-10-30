@@ -78,8 +78,8 @@ function startProbe(binary) {
   return {
     ready: async () => assert.equal((await response()).ready, true, 'original wallpaper saved before app launch'),
     verify: async (photo, phase) => {
-      assert.match(photo.id, /^fav-(red|green|blue)$/, 'expected a bundled synthetic photo');
-      child.stdin.write(JSON.stringify({ command: 'verify', file: photo.preview_file, colour: photo.id.slice(4) }) + '\n');
+      const [, colour] = photo.id.match(/^fav-(red|green|blue)\.png$/) ?? assert.fail('expected a bundled synthetic photo: ' + photo.id);
+      child.stdin.write(JSON.stringify({ command: 'verify', file: photo.preview_file, colour }) + '\n');
       const result = await response();
       await writeFile(path.join(output, phase + '-os-wallpaper.json'), JSON.stringify(result, null, 2));
       assert.equal(result.ok, true, 'independent OS read-back: ' + result.error);
