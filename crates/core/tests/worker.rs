@@ -621,7 +621,12 @@ fn pause_handled_after_a_settings_save_keeps_the_saved_settings() {
 
 #[test]
 fn pause_handled_after_a_settings_reload_keeps_the_saved_settings() {
-    let mut w = World::new(config(&[SourceId::Unsplash]), vec![screen("1", 160, 90)]);
+    // No Pexels key at first, so the snapshot only has one if the save is kept.
+    let start = Config {
+        pexels_key: String::new(),
+        ..config(&[SourceId::Unsplash])
+    };
+    let mut w = World::new(start, vec![screen("1", 160, 90)]);
     let mut saved = Config::load_or_create(&w.paths.config_file).unwrap();
     saved.query = "mountains".into();
     saved.pexels_key = "new-pexels-key".into();
@@ -638,6 +643,11 @@ fn pause_handled_after_a_settings_reload_keeps_the_saved_settings() {
     assert!(on_disk.paused);
     assert!(snap.settings.paused);
     assert_eq!(snap.settings.query, "mountains");
+    assert!(snap.has_pexels_key);
+    assert_eq!(
+        snap.settings.sources,
+        [SourceId::Unsplash, SourceId::Pexels]
+    );
     assert_eq!(snap.next_rotation_at, None, "paused: nothing is scheduled");
 }
 
@@ -651,6 +661,7 @@ fn pause_and_resume_persist_and_show_in_the_snapshot() {
         "the tray checkbox follows the snapshot"
     );
     assert!(Config::load_or_create(&w.paths.config_file).unwrap().paused);
+    assert_eq!(snap.next_rotation_at, None);
 
     let snap = w.run(Command::SetPaused(false));
     assert!(!snap.settings.paused);
