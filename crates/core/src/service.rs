@@ -237,6 +237,10 @@ pub struct Service {
     error: Option<String>,
     notice: Option<String>,
     last_failed_fetch: u64,
+    /// The cache cap had to drop a prefetched set, so prefetching waits
+    /// until the cap, the sources or the displays change. Without this,
+    /// every tick would download a set only to delete it again.
+    prefetch_over_cap: bool,
     /// Sources resting after an error, until this time.
     resting: HashMap<SourceId, u64>,
     rng: u64,
@@ -275,6 +279,7 @@ impl Service {
             error: None,
             notice: None,
             last_failed_fetch: 0,
+            prefetch_over_cap: false,
             resting: HashMap::new(),
             rng: seed | 1,
             env_keys,
@@ -417,6 +422,10 @@ impl Service {
                     self.state.pexels_pages = None;
                     self.last_failed_fetch = 0;
                     self.resting.clear();
+                    self.prefetch_over_cap = false;
+                }
+                if config.cache_cap_mb != self.config.cache_cap_mb {
+                    self.prefetch_over_cap = false;
                 }
                 if config.keys(self.env_keys) != self.keys() {
                     self.last_failed_fetch = 0;
@@ -470,6 +479,7 @@ impl Service {
             return;
         }
         self.log(&format!("displays changed: {} connected", live.len()));
+        self.prefetch_over_cap = false;
         let Some(current) = self.state.current.clone() else {
             return;
         };
@@ -688,7 +698,10 @@ impl Service {
     }
 
     fn prefetch_if_needed(&mut self) {
-        if !self.can_fetch() || now() < self.last_failed_fetch + RETRY_AFTER_SECS {
+        if !self.can_fetch()
+            || self.prefetch_over_cap
+            || now() < self.last_failed_fetch + RETRY_AFTER_SECS
+        {
             return;
         }
         let displays = self.live_displays();
@@ -1099,6 +1112,12 @@ impl Service {
                 }
                 if report.dropped_next {
                     self.save_state();
+                    if !self.prefetch_over_cap {
+                        self.prefetch_over_cap = true;
+                        self.log(
+                            "prefetch paused: the cache cap is too small for a prefetched photo",
+                        );
+                    }
                 }
             }
             Err(e) => self.fail(e),
