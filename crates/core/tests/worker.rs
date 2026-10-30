@@ -599,6 +599,143 @@ fn errors_and_logs_never_show_the_configured_keys() {
     }
 }
 
+#[test]
+fn own_photos_in_favorites_get_no_unsplash_link() {
+    let mut w = World::new(config(&[SourceId::Favorites]), vec![screen("1", 160, 90)]);
+    w.add_favorites(&["Paris - Eiffel tower.png"]);
+    let snap = w.run(Command::Next(None));
+    let p = &snap.current[0];
+    assert!(
+        !p.photo_url.starts_with("https://unsplash.com/"),
+        "{}",
+        p.photo_url
+    );
+}
+
+#[test]
+fn pause_handled_after_a_settings_save_keeps_the_saved_settings() {
+    let mut w = World::new(config(&[SourceId::Unsplash]), vec![screen("1", 160, 90)]);
+    // save_settings on the UI thread: read, change and write the file, then queue Reload.
+    let mut saved = Config::load_or_create(&w.paths.config_file).unwrap();
+    saved.query = "mountains".into();
+    saved.pexels_key = "new-pexels-key".into();
+    saved.sources = vec![SourceId::Unsplash, SourceId::Pexels];
+    saved.save(&w.paths.config_file).unwrap();
+    // The tray's Pause was queued before that Reload.
+    w.run(Command::SetPaused(true));
+    let snap = w.run(Command::Reload);
+    let on_disk = Config::load_or_create(&w.paths.config_file).unwrap();
+    assert_eq!(
+        on_disk.query, "mountains",
+        "settings the user saved are gone"
+    );
+    assert!(on_disk.paused);
+    assert!(snap.has_pexels_key);
+}
+
+#[test]
+fn pause_handled_after_a_settings_reload_keeps_the_saved_settings() {
+    // No Pexels key at first, so the snapshot only has one if the save is kept.
+    let start = Config {
+        pexels_key: String::new(),
+        ..config(&[SourceId::Unsplash])
+    };
+    let mut w = World::new(start, vec![screen("1", 160, 90)]);
+    let mut saved = Config::load_or_create(&w.paths.config_file).unwrap();
+    saved.query = "mountains".into();
+    saved.pexels_key = "new-pexels-key".into();
+    saved.sources = vec![SourceId::Unsplash, SourceId::Pexels];
+    saved.save(&w.paths.config_file).unwrap();
+
+    w.run(Command::Reload);
+    let snap = w.run(Command::SetPaused(true));
+
+    let on_disk = Config::load_or_create(&w.paths.config_file).unwrap();
+    assert_eq!(on_disk.query, "mountains");
+    assert_eq!(on_disk.pexels_key, "new-pexels-key");
+    assert_eq!(on_disk.sources, [SourceId::Unsplash, SourceId::Pexels]);
+    assert!(on_disk.paused);
+    assert!(snap.settings.paused);
+    assert_eq!(snap.settings.query, "mountains");
+    assert!(snap.has_pexels_key);
+    assert_eq!(
+        snap.settings.sources,
+        [SourceId::Unsplash, SourceId::Pexels]
+    );
+    assert_eq!(snap.next_rotation_at, None, "paused: nothing is scheduled");
+}
+
+#[test]
+fn pause_and_resume_persist_and_show_in_the_snapshot() {
+    let mut w = World::new(config(&[SourceId::Unsplash]), vec![screen("1", 160, 90)]);
+
+    let snap = w.run(Command::SetPaused(true));
+    assert!(
+        snap.settings.paused,
+        "the tray checkbox follows the snapshot"
+    );
+    assert!(Config::load_or_create(&w.paths.config_file).unwrap().paused);
+    assert_eq!(snap.next_rotation_at, None);
+
+    let snap = w.run(Command::SetPaused(false));
+    assert!(!snap.settings.paused);
+    assert!(!Config::load_or_create(&w.paths.config_file).unwrap().paused);
+    assert!(snap.next_rotation_at.is_some());
+}
+
+/// Every command, for the test below. A new variant makes the match fail to
+/// compile, which points whoever adds it here; add it to `all` too.
+fn every_command() -> Vec<Command> {
+    let all = vec![
+        Command::Tick,
+        Command::Next(None),
+        Command::Next(Some(0)),
+        Command::Favorite(None),
+        Command::Favorite(Some(0)),
+        Command::Reload,
+        Command::SetPaused(true),
+        Command::SetPaused(false),
+        Command::Shutdown,
+    ];
+    for command in &all {
+        match command {
+            Command::Next(_)
+            | Command::Favorite(_)
+            | Command::Reload
+            | Command::SetPaused(_)
+            | Command::Tick
+            | Command::Shutdown => {}
+        }
+    }
+    all
+}
+
+/// Class-level check for #60: the settings screen writes `config.toml` from
+/// another thread, so no worker command may write its own (possibly stale)
+/// copy of the config over the file. Whatever the command, a setting saved
+/// just before it is handled is still on disk afterwards.
+#[test]
+fn no_command_overwrites_settings_saved_while_it_was_queued() {
+    for command in every_command() {
+        let mut w = World::new(config(&[SourceId::Unsplash]), vec![screen("1", 160, 90)]);
+        // A photo on screen, so Favorite and per-display Next have work to do.
+        w.run(Command::Next(None));
+
+        let mut saved = Config::load_or_create(&w.paths.config_file).unwrap();
+        saved.query = "saved while queued".into();
+        saved.pexels_key = "saved-pexels-key".into();
+        saved.interval_minutes = 7;
+        saved.save(&w.paths.config_file).unwrap();
+
+        w.run(command.clone());
+
+        let on_disk = Config::load_or_create(&w.paths.config_file).unwrap();
+        assert_eq!(on_disk.query, "saved while queued", "{command:?}");
+        assert_eq!(on_disk.pexels_key, "saved-pexels-key", "{command:?}");
+        assert_eq!(on_disk.interval_minutes, 7, "{command:?}");
+    }
+}
+
 fn noise(path: &std::path::Path, w: u32, h: u32, seed: u32) {
     let mut x = seed | 1;
     image::RgbImage::from_fn(w, h, |_, _| {

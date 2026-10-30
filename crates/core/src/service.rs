@@ -339,9 +339,12 @@ impl Service {
                 self.handle(Command::Tick);
             }
             Command::SetPaused(paused) => {
-                self.config.paused = paused;
-                if let Err(e) = self.config.save(&self.paths.config_file) {
-                    self.fail(e);
+                // The settings screen writes the file too, and may have saved
+                // since this was queued: change only `paused` on disk, then
+                // adopt the file, so its settings aren't lost.
+                match self.save_paused(paused) {
+                    Ok(()) => self.reload(),
+                    Err(e) => self.fail(e),
                 }
                 self.publish();
             }
@@ -415,6 +418,12 @@ impl Service {
             text,
             &[&env.unsplash, &env.pexels, &saved.unsplash, &saved.pexels],
         )
+    }
+
+    fn save_paused(&self, paused: bool) -> Result<()> {
+        let mut config = Config::load_or_create(&self.paths.config_file)?;
+        config.paused = paused;
+        config.save(&self.paths.config_file)
     }
 
     fn reload(&mut self) {
@@ -1080,12 +1089,12 @@ impl Service {
         fs::create_dir_all(&dir).with_context(|| format!("could not create {}", dir.display()))?;
         let mut saved = Vec::new();
         for photo in photos {
-            // Unsplash favorites keep the original "{author} - {id}" name.
-            let id = match photo.source {
-                SourceId::Unsplash => safe_name(&photo.id),
-                other => format!("{}-{}", other.key(), safe_name(&photo.id)),
-            };
-            let dest = dir.join(format!("{} - {id}.jpg", safe_name(&photo.author)));
+            let stem = favorites::stem(
+                photo.source,
+                &safe_name(&photo.author),
+                &safe_name(&photo.id),
+            );
+            let dest = dir.join(format!("{stem}.jpg"));
             if !dest.exists() {
                 fs::copy(&photo.file, &dest).context("could not copy the wallpaper")?;
             }
