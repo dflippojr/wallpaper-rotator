@@ -698,7 +698,10 @@ fn ticks_between_rotations_never_download_or_delete() {
         s.x = 160;
         s
     }];
-    for (cap_mb, padding) in [(20, 0), (20, HEAVY), (30, HEAVY), (200, HEAVY)] {
+    let cases = [20, 30, 200]
+        .into_iter()
+        .flat_map(|cap_mb| [(cap_mb, 0), (cap_mb, HEAVY)]);
+    for (cap_mb, padding) in cases {
         for (screens, per_display) in [(&one, false), (&two, false), (&two, true)] {
             let case = format!(
                 "cap {cap_mb} MB, {} KB photos, {} displays, per display {per_display}",
@@ -717,7 +720,7 @@ fn ticks_between_rotations_never_download_or_delete() {
             let snap = w.run(Command::Next(None));
             assert_eq!(snap.error, None, "{case}");
             let log_file = w.paths.log_file.clone();
-            let log = || fs::read_to_string(&log_file).unwrap_or_default();
+            let log = || fs::read_to_string(&log_file).unwrap();
 
             let (downloads, logged) = (w.api.to(Route::Image).len(), log().len());
             for _ in 0..3 {
@@ -728,4 +731,34 @@ fn ticks_between_rotations_never_download_or_delete() {
             assert!(!since.contains("cleanup removed"), "{case}: {since}");
         }
     }
+}
+
+#[test]
+fn a_display_change_before_the_next_tick_resumes_prefetching() {
+    let mut w = World::new(
+        Config {
+            cache_cap_mb: 30,
+            per_display: true,
+            ..config(&[SourceId::Unsplash])
+        },
+        vec![screen("1", 160, 90), {
+            let mut s = screen("2", 160, 90);
+            s.x = 160;
+            s
+        }],
+    );
+    w.api.pad_images(HEAVY);
+    // Two 22 MB sets don't fit under 30 MB, so prefetching pauses.
+    w.run(Command::Next(None));
+    assert!(w.state().next.is_none());
+
+    // Unplug a display and press Next before any tick notices: two 11 MB
+    // sets fit now.
+    w.screens.lock().unwrap().truncate(1);
+    let snap = w.run(Command::Next(None));
+    assert_eq!(snap.error, None);
+    assert!(
+        w.state().next.is_some_and(|s| s.on_disk()),
+        "prefetching resumes for the new layout"
+    );
 }
