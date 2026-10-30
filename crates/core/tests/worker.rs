@@ -597,3 +597,135 @@ fn errors_and_logs_never_show_the_configured_keys() {
         assert!(!log.contains(key), "a key leaked into the log: {log}");
     }
 }
+
+fn noise(path: &std::path::Path, w: u32, h: u32, seed: u32) {
+    let mut x = seed | 1;
+    image::RgbImage::from_fn(w, h, |_, _| {
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        image::Rgb([x as u8, (x >> 8) as u8, (x >> 16) as u8])
+    })
+    .save(path)
+    .unwrap();
+}
+
+#[test]
+fn a_cap_smaller_than_two_sets_does_not_refetch_every_tick() {
+    let (wp, hp) = (3400, 2300); // ~13 MB per JPEG at q90, so 2 sets > 20 MB
+    let mut w = World::new(
+        Config {
+            cache_cap_mb: 20,
+            ..config(&[SourceId::Favorites])
+        },
+        vec![screen("1", wp, hp)],
+    );
+    let dir = w.favorites_dir();
+    fs::create_dir_all(&dir).unwrap();
+    for i in 0..4 {
+        noise(&dir.join(format!("n{i}.png")), wp, hp, 7 + i);
+    }
+    w.run(Command::Next(None));
+    let log = w.paths.log_file.clone();
+    let drops = || {
+        fs::read_to_string(&log)
+            .unwrap()
+            .matches("cleanup removed")
+            .count()
+    };
+    let before = drops();
+    for _ in 0..3 {
+        w.run(Command::Tick);
+    }
+    assert_eq!(
+        drops() - before,
+        0,
+        "each tick prefetched a set and deleted it again"
+    );
+}
+
+/// 11 MB per photo: one set fits under a 20 MB cap, two don't.
+const HEAVY: usize = 11 * 1024 * 1024;
+
+#[test]
+fn a_cap_smaller_than_two_sets_fetches_on_demand_until_it_is_raised() {
+    let mut w = World::new(
+        Config {
+            cache_cap_mb: 20,
+            ..config(&[SourceId::Unsplash])
+        },
+        vec![screen("1", 160, 90)],
+    );
+    w.api.pad_images(HEAVY);
+    let downloads = |w: &World| w.api.to(Route::Image).len();
+
+    let first = w.run(Command::Next(None));
+    assert_eq!(first.error, None);
+    assert!(w.state().next.is_none(), "the prefetch is over the cap");
+    let after_next = downloads(&w);
+    for _ in 0..3 {
+        w.run(Command::Tick);
+    }
+    assert_eq!(downloads(&w), after_next, "ticks download nothing");
+
+    // Next still works, fetching on demand, and keeps the shown photo.
+    let second = w.run(Command::Next(None));
+    assert_eq!(second.error, None);
+    assert_ne!(second.current[0].id, first.current[0].id);
+    assert_eq!(downloads(&w), after_next + 1, "only the shown photo");
+    let current = w.state().current.unwrap();
+    assert!(current.on_disk(), "the current photo is never deleted");
+    assert_eq!(w.cached_files(), vec![current.photos[0].file.clone()]);
+    w.run(Command::Tick);
+    assert_eq!(downloads(&w), after_next + 1);
+
+    // Raising the cap in Settings lets the next tick prefetch again.
+    w.configure(|c| c.cache_cap_mb = 200);
+    assert_eq!(downloads(&w), after_next + 2);
+    assert!(w.state().next.is_some_and(|s| s.on_disk()));
+    w.run(Command::Tick);
+    assert_eq!(downloads(&w), after_next + 2);
+}
+
+/// The class behind issue #58: whatever the cap, the photo sizes and the
+/// display layout, a tick with no rotation due settles. Once a rotation
+/// has run, further ticks neither download nor delete anything.
+#[test]
+fn ticks_between_rotations_never_download_or_delete() {
+    let one = vec![screen("1", 160, 90)];
+    let two = vec![screen("1", 160, 90), {
+        let mut s = screen("2", 160, 90);
+        s.x = 160;
+        s
+    }];
+    for (cap_mb, padding) in [(20, 0), (20, HEAVY), (30, HEAVY), (200, HEAVY)] {
+        for (screens, per_display) in [(&one, false), (&two, false), (&two, true)] {
+            let case = format!(
+                "cap {cap_mb} MB, {} KB photos, {} displays, per display {per_display}",
+                padding / 1024,
+                screens.len()
+            );
+            let mut w = World::new(
+                Config {
+                    cache_cap_mb: cap_mb,
+                    per_display,
+                    ..config(&[SourceId::Unsplash])
+                },
+                screens.clone(),
+            );
+            w.api.pad_images(padding);
+            let snap = w.run(Command::Next(None));
+            assert_eq!(snap.error, None, "{case}");
+            let log_file = w.paths.log_file.clone();
+            let log = || fs::read_to_string(&log_file).unwrap_or_default();
+
+            let (downloads, logged) = (w.api.to(Route::Image).len(), log().len());
+            for _ in 0..3 {
+                w.run(Command::Tick);
+            }
+            assert_eq!(w.api.to(Route::Image).len(), downloads, "{case}");
+            let since = &log()[logged..];
+            assert!(!since.contains("cleanup removed"), "{case}: {since}");
+        }
+    }
+}
