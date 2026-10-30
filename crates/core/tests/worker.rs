@@ -599,6 +599,19 @@ fn errors_and_logs_never_show_the_configured_keys() {
 }
 
 #[test]
+fn own_photos_in_favorites_get_no_unsplash_link() {
+    let mut w = World::new(config(&[SourceId::Favorites]), vec![screen("1", 160, 90)]);
+    w.add_favorites(&["Paris - Eiffel tower.png"]);
+    let snap = w.run(Command::Next(None));
+    let p = &snap.current[0];
+    assert!(
+        !p.photo_url.starts_with("https://unsplash.com/"),
+        "{}",
+        p.photo_url
+    );
+}
+
+#[test]
 fn pause_handled_after_a_settings_save_keeps_the_saved_settings() {
     let mut w = World::new(config(&[SourceId::Unsplash]), vec![screen("1", 160, 90)]);
     // save_settings on the UI thread: read, change and write the file, then queue Reload.
