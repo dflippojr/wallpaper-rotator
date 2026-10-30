@@ -120,4 +120,35 @@ mod tests {
             "https://wallhaven.cc/w/d5wlmj"
         );
     }
+
+    #[test]
+    fn own_photos_named_like_saves_get_no_link() {
+        assert_eq!(
+            credit("Paris - Eiffel tower"),
+            ("Paris - Eiffel tower".into(), String::new())
+        );
+        assert_eq!(
+            credit("A - daily-commons-Paris - Eiffel Tower.jpg"),
+            ("A".into(), String::new())
+        );
+    }
+
+    #[test]
+    fn app_saved_names_keep_their_links() {
+        assert_eq!(
+            credit("Ann - abc123DEF45"),
+            (
+                "Ann".into(),
+                "https://unsplash.com/photos/abc123DEF45".into()
+            )
+        );
+        assert_eq!(
+            credit("Bo - pexels-417074"),
+            ("Bo".into(), "https://www.pexels.com/photo/417074/".into())
+        );
+        assert_eq!(
+            credit("C - wallhaven-d5wlmj"),
+            ("C".into(), "https://wallhaven.cc/w/d5wlmj".into())
+        );
+    }
 }

@@ -597,3 +597,16 @@ fn errors_and_logs_never_show_the_configured_keys() {
         assert!(!log.contains(key), "a key leaked into the log: {log}");
     }
 }
+
+#[test]
+fn own_photos_in_favorites_get_no_unsplash_link() {
+    let mut w = World::new(config(&[SourceId::Favorites]), vec![screen("1", 160, 90)]);
+    w.add_favorites(&["Paris - Eiffel tower.png"]);
+    let snap = w.run(Command::Next(None));
+    let p = &snap.current[0];
+    assert!(
+        !p.photo_url.starts_with("https://unsplash.com/"),
+        "{}",
+        p.photo_url
+    );
+}
