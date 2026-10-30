@@ -703,9 +703,12 @@ impl Service {
         }
         let displays = self.live_displays();
         // Compared here, not when displays change: `Next` can update the
-        // display list before a tick notices the change.
-        if self.prefetch_over_cap.as_ref() == Some(&displays) {
-            return;
+        // display list before a tick notices the change. A pause for other
+        // displays is over for good, even if that layout comes back.
+        match &self.prefetch_over_cap {
+            Some(paused) if *paused == displays => return,
+            Some(_) => self.prefetch_over_cap = None,
+            None => {}
         }
         let each = self.each(&displays);
         if each {
