@@ -94,28 +94,44 @@ fn credit(stem: &str) -> (String, String) {
 }
 
 /// The author, source and id of a name [`stem`] wrote. Authors may contain
-/// " - " and so may picture-of-the-day ids, so this splits at the first
-/// " - " followed by a source prefix, and only takes the older Unsplash
-/// form when its id looks like an Unsplash photo id.
+/// " - " and so may photo-of-the-day ids, so this tries the forms in order
+/// of how strictly they match: a linked source's id has no spaces, so it
+/// can only follow the last " - "; the older Unsplash form needs an
+/// Unsplash-style id; photo-of-the-day ids start "bing-" or "commons-".
 fn saved_as(stem: &str) -> Option<(&str, SourceId, &str)> {
-    for (i, sep) in stem.match_indices(" - ") {
-        let (author, rest) = (&stem[..i], &stem[i + sep.len()..]);
-        let Some((key, id)) = rest.split_once('-') else {
-            continue;
-        };
+    // Every " - ", overlapping ones too: the author "Ann -" is saved as
+    // "Ann - - pexels-1".
+    let splits = || {
+        (0..stem.len())
+            .filter(|&i| stem.as_bytes()[i..].starts_with(b" - "))
+            .map(|i| (&stem[..i], &stem[i + 3..]))
+    };
+    let linked = splits().find_map(|(author, rest)| {
+        let (key, id) = rest.split_once('-')?;
         let source = match key {
             "unsplash" => SourceId::Unsplash,
             "pexels" => SourceId::Pexels,
             "wallhaven" => SourceId::Wallhaven,
-            "daily" => return Some((author, SourceId::Daily, id)),
-            _ => continue,
+            _ => return None,
         };
-        if is_link_id(id) {
-            return Some((author, source, id));
-        }
-    }
-    let (author, id) = stem.rsplit_once(" - ")?;
-    (id.len() == 11 && is_link_id(id)).then_some((author, SourceId::Unsplash, id))
+        is_link_id(id).then_some((author, source, id))
+    });
+    let legacy = || {
+        splits()
+            .find(|(_, id)| id.len() == 11 && is_link_id(id))
+            .map(|(author, id)| (author, SourceId::Unsplash, id))
+    };
+    let daily = || {
+        splits().find_map(|(author, rest)| {
+            let id = rest.strip_prefix("daily-")?;
+            (id.starts_with("bing-") || id.starts_with("commons-")).then_some((
+                author,
+                SourceId::Daily,
+                id,
+            ))
+        })
+    };
+    linked.or_else(legacy).or_else(daily)
 }
 
 /// Ids that go into a link as they are: `[A-Za-z0-9_-]+`.
@@ -162,7 +178,7 @@ mod tests {
     #[test]
     fn names_without_a_credit() {
         assert_eq!(credit("sunset"), ("sunset".into(), String::new()));
-        assert_eq!(credit("A - daily-bing-x").1, "");
+        assert_eq!(credit("A - daily-bing-x"), ("A".into(), String::new()));
         assert_eq!(
             credit("A - wallhaven-d5wlmj").1,
             "https://wallhaven.cc/w/d5wlmj"
@@ -187,13 +203,22 @@ mod tests {
     /// URL path, or gets no link and the whole stem as its author.
     #[test]
     fn credit_links_only_names_the_app_writes() {
-        let authors = ["Ann", "Ann Lee", "Jean - Luc", "Paris - pexels", "photo"];
+        let authors = [
+            "Ann",
+            "Ann Lee",
+            "Jean - Luc",
+            "Paris - pexels",
+            "Ann - daily-life",
+            "Ann -",
+            "- Ann",
+            "photo",
+        ];
         let ids = [
             (SourceId::Unsplash, "abc123DEF45"),
             (SourceId::Unsplash, "I-B7DT1Sfu8"),
             (SourceId::Pexels, "417074"),
             (SourceId::Wallhaven, "d5wlmj"),
-            (SourceId::Daily, "bing-x"),
+            (SourceId::Daily, "bing-20261030-Fjord"),
             (SourceId::Daily, "commons-Paris - Eiffel Tower.jpg"),
         ];
         for author in authors {
@@ -210,6 +235,8 @@ mod tests {
             "pexels-1",
             "pexels-my trip",
             "wallhaven-a b",
+            "daily-life",
+            "daily-bing-x",
             "unsplash-",
             "daily-x",
             "x.jpg",
@@ -252,6 +279,21 @@ mod tests {
         assert_eq!(
             credit("C - wallhaven-d5wlmj"),
             ("C".into(), "https://wallhaven.cc/w/d5wlmj".into())
+        );
+        // Authors that look like part of a save's name (#65 review).
+        assert_eq!(
+            credit("Ann - daily-life - pexels-417074"),
+            (
+                "Ann - daily-life".into(),
+                "https://www.pexels.com/photo/417074/".into()
+            )
+        );
+        assert_eq!(
+            credit("Ann - - pexels-417074"),
+            (
+                "Ann -".into(),
+                "https://www.pexels.com/photo/417074/".into()
+            )
         );
     }
 }
