@@ -1454,6 +1454,16 @@ mod tests {
         );
     }
 
+    /// These two share a 32-bit FNV-1a hash, so a short hash can't be enough.
+    #[test]
+    fn ids_with_the_same_32_bit_hash_get_their_own_cache_names() {
+        let long = "a".repeat(80);
+        assert_ne!(
+            cache_stem(&format!("fav-{long}38x03df0.png")),
+            cache_stem(&format!("fav-{long}rc6mxz06.png"))
+        );
+    }
+
     /// The class of bug behind #59: `safe_name` is lossy, so it must never be
     /// all that tells two IDs apart. Every string over the characters it
     /// conflates or trims, alone and past the 80 characters it keeps, must
