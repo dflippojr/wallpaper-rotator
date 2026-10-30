@@ -611,7 +611,10 @@ fn pause_handled_after_a_settings_save_keeps_the_saved_settings() {
     w.run(Command::SetPaused(true));
     let snap = w.run(Command::Reload);
     let on_disk = Config::load_or_create(&w.paths.config_file).unwrap();
-    assert_eq!(on_disk.query, "mountains", "settings the user saved are gone");
+    assert_eq!(
+        on_disk.query, "mountains",
+        "settings the user saved are gone"
+    );
     assert!(on_disk.paused);
     assert!(snap.has_pexels_key);
 }
@@ -643,7 +646,10 @@ fn pause_and_resume_persist_and_show_in_the_snapshot() {
     let mut w = World::new(config(&[SourceId::Unsplash]), vec![screen("1", 160, 90)]);
 
     let snap = w.run(Command::SetPaused(true));
-    assert!(snap.settings.paused, "the tray checkbox follows the snapshot");
+    assert!(
+        snap.settings.paused,
+        "the tray checkbox follows the snapshot"
+    );
     assert!(Config::load_or_create(&w.paths.config_file).unwrap().paused);
 
     let snap = w.run(Command::SetPaused(false));
