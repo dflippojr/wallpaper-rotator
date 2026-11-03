@@ -5,6 +5,8 @@
 //! Everything else in the app-owned images folder is deleted after each
 //! rotation, so disk use stays flat no matter how long the app runs.
 
+#[cfg(test)]
+pub(crate) mod alloc_probe;
 pub mod config;
 pub mod log;
 pub mod net;
