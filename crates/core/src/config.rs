@@ -216,6 +216,26 @@ mod tests {
     }
 
     #[test]
+    fn cache_cap_saturates_instead_of_overflowing() {
+        // The first size whose bytes don't fit in a u64, and the largest.
+        for cache_cap_mb in [u64::MAX / (1024 * 1024) + 1, u64::MAX] {
+            let config = Config {
+                cache_cap_mb,
+                ..Config::default()
+            };
+            assert_eq!(config.cache_cap_bytes(), u64::MAX, "{cache_cap_mb} MB");
+        }
+        let config = Config {
+            cache_cap_mb: u64::MAX / (1024 * 1024),
+            ..Config::default()
+        };
+        assert_eq!(
+            config.cache_cap_bytes(),
+            u64::MAX / (1024 * 1024) * 1024 * 1024
+        );
+    }
+
+    #[test]
     fn keys_are_trimmed_and_the_environment_wins() {
         let config = Config {
             access_key: "  saved\n".into(),

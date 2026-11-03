@@ -51,6 +51,27 @@ impl World {
         Self::start(dir, paths, screens)
     }
 
+    /// A worker that starts on the exact `state.json` that `state` writes
+    /// for these paths, valid or not, with `cached` files already in the
+    /// image cache.
+    pub fn with_state_file(
+        config: Config,
+        state: impl FnOnce(&Paths) -> Vec<u8>,
+        cached: &[&str],
+        screens: Vec<Display>,
+    ) -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        config.save(&paths.config_file).unwrap();
+        fs::create_dir_all(paths.state_file.parent().unwrap()).unwrap();
+        fs::write(&paths.state_file, state(&paths)).unwrap();
+        fs::create_dir_all(&paths.images_dir).unwrap();
+        for name in cached {
+            fs::write(paths.images_dir.join(name), b"jpeg").unwrap();
+        }
+        Self::start(dir, paths, screens)
+    }
+
     fn start(dir: TempDir, paths: Paths, screens: Vec<Display>) -> Self {
         let api = StubApi::start();
         let applied = Arc::new(Mutex::new(Vec::new()));
@@ -83,6 +104,23 @@ impl World {
             applied,
             _dir: dir,
         }
+    }
+
+    /// Starts the worker thread as the app does, lets it finish its startup
+    /// work (cleanup and the first tick) and stops it. Returns what the
+    /// worker left: the files in the image cache, sorted, and the layouts it
+    /// set.
+    pub fn start_up(self) -> (Vec<PathBuf>, Vec<Layout>) {
+        let (tx, handle) = self.svc.spawn();
+        tx.send(Command::Shutdown).unwrap();
+        handle.join().unwrap();
+        let mut files: Vec<PathBuf> = fs::read_dir(&self.paths.images_dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        files.sort();
+        let applied = self.applied.lock().unwrap().clone();
+        (files, applied)
     }
 
     pub fn run(&mut self, command: Command) -> Snapshot {

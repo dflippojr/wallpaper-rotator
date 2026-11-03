@@ -1347,6 +1347,21 @@ mod tests {
     }
 
     #[test]
+    fn huge_intervals_saturate_instead_of_overflowing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut svc = service(dir.path());
+        svc.config.access_key = "k".into();
+        svc.state.current = Some(cached(&svc, "cur"));
+        svc.state.last_rotated = now();
+        // The first interval whose seconds don't fit in a u64, and the largest.
+        for minutes in [u64::MAX / 60 + 1, u64::MAX] {
+            svc.config.interval_minutes = minutes;
+            assert!(!svc.rotation_due(), "{minutes} minutes");
+            assert_eq!(svc.snapshot().next_rotation_at, Some(u64::MAX));
+        }
+    }
+
+    #[test]
     fn invalid_source_settings_do_not_change_config() {
         let mut config = Config::default();
         let original = config.clone();

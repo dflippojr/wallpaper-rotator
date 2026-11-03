@@ -1117,3 +1117,101 @@ fn only_a_saved_config_decides_the_login_item() {
     let w = World::with_config_file(b"start_at_login = false\n", vec![]);
     assert_eq!(w.svc.saved_start_at_login(), Some(false));
 }
+
+/// No source can fetch: no key, and only Unsplash ticked.
+fn no_fetching() -> Config {
+    Config {
+        access_key: String::new(),
+        sources: vec![SourceId::Unsplash],
+        ..Config::default()
+    }
+}
+
+fn names(files: &[std::path::PathBuf]) -> Vec<String> {
+    files
+        .iter()
+        .map(|f| f.file_name().unwrap().to_string_lossy().into_owned())
+        .collect()
+}
+
+#[test]
+fn an_unparseable_state_file_keeps_the_cache_at_startup() {
+    // The desktop may still point at one of these; with the state lost,
+    // nothing says which, so none is deleted.
+    let w = World::with_state_file(
+        no_fetching(),
+        |_| b"{not json".to_vec(),
+        &["shown.jpg", "older.jpg"],
+        vec![screen("1", 160, 90)],
+    );
+
+    let (files, applied) = w.start_up();
+
+    assert_eq!(names(&files), ["older.jpg", "shown.jpg"]);
+    assert!(applied.is_empty());
+}
+
+#[test]
+fn an_unparseable_state_file_also_keeps_the_cache_through_a_reload() {
+    let mut w = World::with_state_file(
+        no_fetching(),
+        |_| b"{not json".to_vec(),
+        &["shown.jpg"],
+        vec![screen("1", 160, 90)],
+    );
+
+    w.configure(|c| c.cache_cap_mb = 30);
+
+    assert_eq!(names(&w.cached_files()), ["shown.jpg"]);
+}
+
+#[test]
+fn an_unparseable_state_file_cleans_up_once_a_new_photo_is_on_screen() {
+    let w = World::with_state_file(
+        config(&[SourceId::Unsplash]),
+        |_| b"{not json".to_vec(),
+        &["shown.jpg"],
+        vec![screen("1", 160, 90)],
+    );
+
+    let (files, applied) = w.start_up();
+
+    assert_eq!(
+        applied.len(),
+        1,
+        "startup rotates: there's no current photo"
+    );
+    let Layout::Same(file) = &applied[0] else {
+        panic!("one photo for one display, got {applied:?}");
+    };
+    assert!(files.contains(file));
+    assert!(
+        !names(&files).contains(&"shown.jpg".to_string()),
+        "{files:?}"
+    );
+}
+
+#[test]
+fn a_valid_state_file_cleans_up_stale_images_at_startup() {
+    let w = World::with_state_file(
+        no_fetching(),
+        |paths| {
+            serde_json::to_vec(&serde_json::json!({
+                "current": {
+                    "id": "cur", "file": paths.images_dir.join("cur.jpg"),
+                    "author": "Ann", "author_url": "", "photo_url": "",
+                    "preview_url": "", "location": null, "description": null,
+                    "download_location": "", "color": null,
+                },
+            }))
+            .unwrap()
+        },
+        &["cur.jpg", "stale.jpg"],
+        vec![screen("1", 160, 90)],
+    );
+
+    let (files, applied) = w.start_up();
+
+    assert_eq!(names(&files), ["cur.jpg"]);
+    assert!(applied.is_empty());
+}
