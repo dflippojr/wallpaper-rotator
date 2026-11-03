@@ -36,10 +36,10 @@ fn main() -> Result<()> {
         Some("status") => status(&paths),
         Some("cleanup") => {
             let config = Config::load_or_create(&paths.config_file)?;
-            let (mut state, lost) = State::load_checked(&paths.state_file);
-            if lost {
+            let mut state = State::load(&paths.state_file);
+            if state.keep_cache {
                 bail!(
-                    "could not read {}, so it's unknown which cached image the desktop shows; \
+                    "{} was lost, so it's unknown which cached image the desktop shows; \
                      rotate first, then clean up",
                     paths.state_file.display()
                 );

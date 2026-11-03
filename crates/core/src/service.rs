@@ -255,10 +255,6 @@ pub struct Service {
     /// The config file couldn't be parsed, so `config` is the defaults rather
     /// than what the user saved.
     on_fallback_defaults: bool,
-    /// `state.json` couldn't be parsed, so the state doesn't know which
-    /// cached image the desktop shows. Cleanup deletes nothing until a newly
-    /// fetched photo is on screen.
-    keep_cache: bool,
 }
 
 impl Service {
@@ -281,7 +277,7 @@ impl Service {
             Err(e) if e.is::<Unparseable>() => (Config::default(), Some(e)),
             Err(e) => return Err(e),
         };
-        let (state, state_lost) = State::load_checked(&paths.state_file);
+        let state = State::load(&paths.state_file);
         let seed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)
@@ -302,13 +298,11 @@ impl Service {
             rng: seed | 1,
             env_keys,
             on_fallback_defaults: broken.is_some(),
-            keep_cache: state_lost,
         };
-        if state_lost {
-            service.log(&format!(
-                "could not read {}; starting fresh, and keeping the cached images until a new photo is on screen",
-                service.paths.state_file.display()
-            ));
+        if service.state.keep_cache {
+            service.log(
+                "the saved state was lost, so cached images are kept until a new photo is on screen",
+            );
         }
         if let Some(e) = broken {
             service.log(&format!("error: {e:#}; using the default settings"));
@@ -614,7 +608,7 @@ impl Service {
         }
         self.state.current = Some(next);
         self.state.last_rotated = now();
-        self.keep_cache = false;
+        self.state.keep_cache = false;
         self.save_state();
         self.cleanup();
         Ok(())
@@ -1151,9 +1145,6 @@ impl Service {
     }
 
     fn cleanup(&mut self) {
-        if self.keep_cache {
-            return;
-        }
         match store::cleanup(
             &self.paths.images_dir,
             &mut self.state,

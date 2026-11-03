@@ -113,26 +113,31 @@ pub struct State {
     pub queue: BTreeMap<SourceId, Vec<Candidate>>,
     /// How many result pages the last Pexels search had.
     pub pexels_pages: Option<u64>,
+    /// The saved state was lost (`state.json` couldn't be read or parsed),
+    /// so nothing says which cached image the desktop shows. Cleanup deletes
+    /// nothing until a newly fetched photo is on screen. Saved, so a restart
+    /// before then keeps the cache too.
+    #[serde(skip_serializing_if = "is_false")]
+    pub keep_cache: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 impl State {
-    /// Loads saved state. A missing or unreadable file starts fresh rather
-    /// than blocking rotation.
+    /// Loads saved state. A missing file starts fresh; so does an unreadable
+    /// one rather than blocking rotation, but with `keep_cache` set because
+    /// the fresh state knows nothing about the images on disk.
     pub fn load(path: &Path) -> Self {
-        Self::load_checked(path).0
-    }
-
-    /// Like [`State::load`], and also says whether the file was there but
-    /// couldn't be read or parsed. The fresh state then knows nothing about
-    /// the images on disk, including the one on the desktop.
-    pub fn load_checked(path: &Path) -> (Self, bool) {
+        let lost = Self {
+            keep_cache: true,
+            ..Self::default()
+        };
         match fs::read_to_string(path) {
-            Ok(text) => match serde_json::from_str(&text) {
-                Ok(state) => (state, false),
-                Err(_) => (Self::default(), true),
-            },
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Self::default(), false),
-            Err(_) => (Self::default(), true),
+            Ok(text) => serde_json::from_str(&text).unwrap_or(lost),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::default(),
+            Err(_) => lost,
         }
     }
 
@@ -183,9 +188,13 @@ pub struct CleanupReport {
 
 /// Deletes every image except the current and prefetched sets, then drops
 /// the prefetched set too if the cache is still over `cap_bytes`. The
-/// current set is never deleted.
+/// current set is never deleted. Deletes nothing while the state says
+/// `keep_cache`.
 pub fn cleanup(images_dir: &Path, state: &mut State, cap_bytes: u64) -> Result<CleanupReport> {
     let mut report = CleanupReport::default();
+    if state.keep_cache {
+        return Ok(report);
+    }
     let keep: HashSet<PathBuf> = [&state.current, &state.next]
         .into_iter()
         .flatten()
@@ -335,14 +344,34 @@ mod tests {
         };
         state.save(&path).unwrap();
         assert_eq!(State::load(&path), state);
-        assert_eq!(State::load_checked(&path), (state, false));
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("keep_cache"), "{text}");
+        let lost = State {
+            keep_cache: true,
+            ..State::default()
+        };
         fs::write(&path, b"{not json").unwrap();
-        assert_eq!(State::load(&path), State::default());
-        assert_eq!(State::load_checked(&path), (State::default(), true));
+        assert_eq!(State::load(&path), lost);
         fs::write(&path, b"\xff\xfe not utf-8").unwrap();
-        assert_eq!(State::load_checked(&path), (State::default(), true));
+        assert_eq!(State::load(&path), lost);
+        // The hold is saved until a new photo clears it.
+        lost.save(&path).unwrap();
+        assert_eq!(State::load(&path), lost);
         fs::remove_file(&path).unwrap();
-        assert_eq!(State::load_checked(&path), (State::default(), false));
+        assert_eq!(State::load(&path), State::default());
+    }
+
+    #[test]
+    fn keep_cache_deletes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("shown.jpg"), b"jpeg").unwrap();
+        let mut state = State {
+            keep_cache: true,
+            ..State::default()
+        };
+        let report = cleanup(dir.path(), &mut state, 1).unwrap();
+        assert_eq!(report, CleanupReport::default());
+        assert!(dir.path().join("shown.jpg").exists());
     }
 
     fn display(id: &str, width: u32) -> Display {
