@@ -39,6 +39,19 @@ impl World {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::under(dir.path());
         config.save(&paths.config_file).unwrap();
+        Self::start(dir, paths, screens)
+    }
+
+    /// A worker that starts on this exact config file, valid or not.
+    pub fn with_config_file(bytes: &[u8], screens: Vec<Display>) -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        fs::create_dir_all(paths.config_file.parent().unwrap()).unwrap();
+        fs::write(&paths.config_file, bytes).unwrap();
+        Self::start(dir, paths, screens)
+    }
+
+    fn start(dir: TempDir, paths: Paths, screens: Vec<Display>) -> Self {
         let api = StubApi::start();
         let applied = Arc::new(Mutex::new(Vec::new()));
         let screens = Arc::new(Mutex::new(screens));
