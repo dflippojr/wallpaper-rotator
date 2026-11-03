@@ -4,10 +4,11 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
-use image::imageops::{self, FilterType};
+use image::imageops;
 use image::RgbImage;
 
 use super::Display;
+use crate::source::fit_rgb8;
 
 /// Refuse layouts bigger than this many pixels (about 1.5 GB of RGB).
 const MAX_PIXELS: u64 = 500_000_000;
@@ -32,21 +33,14 @@ pub fn compose(parts: &[(Display, PathBuf)], dest: &Path) -> Result<()> {
             image::open(file).with_context(|| format!("could not read {}", file.display()))?;
         // Photos are downloaded at the display's size; resize only if the
         // layout changed since.
-        let rgb = if (photo.width(), photo.height()) == (display.width, display.height) {
-            photo.into_rgb8()
-        } else {
-            let fitted =
-                photo.resize_to_fill(display.width, display.height, FilterType::CatmullRom);
-            // The decoded original is not needed any more: free it now.
-            drop(photo);
-            fitted.into_rgb8()
-        };
-        imageops::replace(
-            &mut canvas,
-            &rgb,
-            i64::from(display.x - left),
-            i64::from(display.y - top),
-        );
+        fit_rgb8(photo, display.width, display.height, |rgb| {
+            imageops::replace(
+                &mut canvas,
+                rgb,
+                i64::from(display.x - left),
+                i64::from(display.y - top),
+            );
+        });
     }
 
     crate::source::write_jpeg(&canvas, dest).context("could not write the stitched wallpaper")
@@ -57,6 +51,7 @@ mod tests {
     use super::*;
     use crate::alloc_probe::large_allocations;
     use crate::source::write_jpeg;
+    use image::imageops::FilterType;
     use image::{imageops, DynamicImage, Rgb, Rgba, RgbaImage};
     use std::fs;
 

@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use image::codecs::jpeg::JpegEncoder;
 use image::imageops::FilterType;
-use image::ImageReader;
+use image::{DynamicImage, ImageReader};
 use serde::{Deserialize, Serialize};
 
 use crate::net::{part_path, Http};
@@ -181,15 +181,27 @@ pub fn crop(src: &Path, width: u32, height: u32, dest: &Path, landscape_only: bo
     if landscape_only && photo.height() > photo.width() {
         bail!("skipped a portrait image");
     }
+    fit_rgb8(photo, width, height, |rgb| write_jpeg(rgb, dest))
+}
+
+/// Hands `use_it` the photo as RGB8 at `width`x`height`: scaled to cover that
+/// size and cropped from the middle, unless it has that size already. An RGB8
+/// photo is moved, not copied. A resized original is freed before `use_it`
+/// runs, so the decoded image is not held while the result is used.
+pub(crate) fn fit_rgb8<T>(
+    photo: DynamicImage,
+    width: u32,
+    height: u32,
+    use_it: impl FnOnce(&image::RgbImage) -> T,
+) -> T {
     let rgb = if (photo.width(), photo.height()) == (width, height) {
         photo.into_rgb8()
     } else {
         let fitted = photo.resize_to_fill(width, height, FilterType::CatmullRom);
-        // The decoded original is not needed any more: free it before encoding.
         drop(photo);
         fitted.into_rgb8()
     };
-    write_jpeg(&rgb, dest)
+    use_it(&rgb)
 }
 
 pub fn write_jpeg(img: &image::RgbImage, dest: &Path) -> Result<()> {
@@ -215,7 +227,7 @@ pub fn write_jpeg(img: &image::RgbImage, dest: &Path) -> Result<()> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::alloc_probe::large_allocations;
+    use crate::alloc_probe::{large_allocations, live, unwatch, watch};
     use image::{DynamicImage, GrayImage, ImageBuffer, Rgb, RgbImage, Rgba, RgbaImage};
 
     pub fn png(dir: &Path, name: &str, w: u32, h: u32) -> PathBuf {
@@ -368,5 +380,31 @@ pub(crate) mod tests {
             large_allocations(full, || crop(&src, w, h, &dest, false));
         result.unwrap();
         assert_eq!(full_size_buffers, 1, "full-size buffers made by crop");
+    }
+
+    #[test]
+    fn an_rgb8_photo_is_used_in_place() {
+        let (w, h) = (160, 90);
+        watch(w as usize * h as usize * 3);
+        let photo =
+            DynamicImage::ImageRgb8(RgbImage::from_fn(w, h, |x, y| Rgb([x as u8, y as u8, 7])));
+        let mut live_while_used = 0;
+        fit_rgb8(photo, w, h, |_| live_while_used = live());
+        unwatch();
+        // Moved, not copied: the photo's buffer is the only one alive.
+        assert_eq!(live_while_used, 1);
+    }
+
+    #[test]
+    fn a_resized_photo_is_freed_before_it_is_used() {
+        let (w, h) = (640, 400);
+        watch(w as usize * h as usize * 3);
+        let photo =
+            DynamicImage::ImageRgb8(RgbImage::from_fn(w, h, |x, y| Rgb([x as u8, y as u8, 7])));
+        let mut live_while_used = 0;
+        fit_rgb8(photo, 160, 90, |_| live_while_used = live());
+        unwatch();
+        // The decoded original is gone by the time the resized image is used.
+        assert_eq!(live_while_used, 0);
     }
 }
