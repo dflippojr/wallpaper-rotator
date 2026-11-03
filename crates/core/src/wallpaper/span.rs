@@ -32,14 +32,18 @@ pub fn compose(parts: &[(Display, PathBuf)], dest: &Path) -> Result<()> {
             image::open(file).with_context(|| format!("could not read {}", file.display()))?;
         // Photos are downloaded at the display's size; resize only if the
         // layout changed since.
-        let photo = if (photo.width(), photo.height()) == (display.width, display.height) {
-            photo
+        let rgb = if (photo.width(), photo.height()) == (display.width, display.height) {
+            photo.into_rgb8()
         } else {
-            photo.resize_to_fill(display.width, display.height, FilterType::CatmullRom)
+            let fitted =
+                photo.resize_to_fill(display.width, display.height, FilterType::CatmullRom);
+            // The decoded original is not needed any more: free it now.
+            drop(photo);
+            fitted.into_rgb8()
         };
         imageops::replace(
             &mut canvas,
-            &photo.to_rgb8(),
+            &rgb,
             i64::from(display.x - left),
             i64::from(display.y - top),
         );

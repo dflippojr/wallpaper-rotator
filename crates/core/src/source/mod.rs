@@ -181,12 +181,15 @@ pub fn crop(src: &Path, width: u32, height: u32, dest: &Path, landscape_only: bo
     if landscape_only && photo.height() > photo.width() {
         bail!("skipped a portrait image");
     }
-    let photo = if (photo.width(), photo.height()) == (width, height) {
-        photo
+    let rgb = if (photo.width(), photo.height()) == (width, height) {
+        photo.into_rgb8()
     } else {
-        photo.resize_to_fill(width, height, FilterType::CatmullRom)
+        let fitted = photo.resize_to_fill(width, height, FilterType::CatmullRom);
+        // The decoded original is not needed any more: free it before encoding.
+        drop(photo);
+        fitted.into_rgb8()
     };
-    write_jpeg(&photo.to_rgb8(), dest)
+    write_jpeg(&rgb, dest)
 }
 
 pub fn write_jpeg(img: &image::RgbImage, dest: &Path) -> Result<()> {
