@@ -252,6 +252,9 @@ pub struct Service {
     /// Whether `UNSPLASH_ACCESS_KEY` and `PEXELS_API_KEY` win over the
     /// config's keys.
     env_keys: bool,
+    /// The config file couldn't be parsed, so `config` is the defaults rather
+    /// than what the user saved.
+    on_fallback_defaults: bool,
 }
 
 impl Service {
@@ -294,11 +297,19 @@ impl Service {
             resting: HashMap::new(),
             rng: seed | 1,
             env_keys,
+            on_fallback_defaults: broken.is_some(),
         };
         if let Some(e) = broken {
             service.log(&format!("error: {e:#}; using the default settings"));
         }
         Ok(service)
+    }
+
+    /// The user's "start at login" choice, or `None` while a broken config
+    /// has the service on defaults: those say nothing about what the user
+    /// chose, so they mustn't change the login item.
+    pub fn saved_start_at_login(&self) -> Option<bool> {
+        (!self.on_fallback_defaults).then_some(self.config.start_at_login)
     }
 
     /// The Unsplash and Pexels keys in use.
@@ -456,6 +467,7 @@ impl Service {
                     self.resting.clear();
                 }
                 self.config = config;
+                self.on_fallback_defaults = false;
                 self.error = None;
                 self.save_state();
                 self.cleanup();

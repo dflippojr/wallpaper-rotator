@@ -1096,3 +1096,24 @@ fn a_saved_key_on_a_broken_line_stays_out_of_the_log() {
     assert!(!log.contains(secret), "{log}");
     assert!(!snap.error.unwrap().contains(secret));
 }
+
+#[test]
+fn only_a_saved_config_decides_the_login_item() {
+    // Defaults say true, so a fallback that passed them on would turn the
+    // login item back on for someone who turned it off.
+    let (_, bytes, _) = BROKEN_CONFIGS[0];
+    let mut w = World::with_config_file(bytes, vec![screen("a", 320, 200)]);
+    assert!(w.run(Command::Tick).settings.start_at_login);
+    assert_eq!(w.svc.saved_start_at_login(), None);
+
+    // A failed reload leaves it on the defaults.
+    w.run(Command::Reload);
+    assert_eq!(w.svc.saved_start_at_login(), None);
+
+    fs::write(&w.paths.config_file, "start_at_login = false\n").unwrap();
+    w.run(Command::Reload);
+    assert_eq!(w.svc.saved_start_at_login(), Some(false));
+
+    let w = World::with_config_file(b"start_at_login = false\n", vec![]);
+    assert_eq!(w.svc.saved_start_at_login(), Some(false));
+}

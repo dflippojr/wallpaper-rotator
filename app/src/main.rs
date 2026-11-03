@@ -474,6 +474,7 @@ fn main() {
             let service = Service::new(paths.clone(), hooks)?;
             *current_layout.lock().unwrap() = service.current_layout();
             let first = service.snapshot();
+            let start_at_login = service.saved_start_at_login();
             let (commands, _worker) = service.spawn();
 
             *snapshot.lock().unwrap() = first.clone();
@@ -493,10 +494,8 @@ fn main() {
                 pause_item: Mutex::new(None),
             });
             build_tray(&handle, first.settings.paused)?;
-            // Defaults standing in for a broken config say nothing about what
-            // the user chose, so they mustn't turn the login item back on.
-            if Config::load_or_create(&paths.config_file).is_ok() {
-                sync_autostart(&handle, first.settings.start_at_login);
+            if let Some(enabled) = start_at_login {
+                sync_autostart(&handle, enabled);
             }
 
             #[cfg(target_os = "macos")]
