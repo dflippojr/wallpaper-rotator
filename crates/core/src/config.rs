@@ -65,12 +65,17 @@ impl Default for Config {
 }
 
 impl Config {
-    /// Loads the config, writing the defaults on first run.
+    /// Loads the config, writing the defaults on first run. A file that exists
+    /// but can't be parsed is an [`Unparseable`] error and stays as it is.
     pub fn load_or_create(path: &Path) -> Result<Self> {
-        match fs::read_to_string(path) {
-            Ok(text) => {
-                toml::from_str(&text).with_context(|| format!("could not parse {}", path.display()))
-            }
+        match fs::read(path) {
+            Ok(bytes) => Self::parse(&bytes).map_err(|problem| {
+                Unparseable {
+                    path: path.to_path_buf(),
+                    problem,
+                }
+                .into()
+            }),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 let config = Self::default();
                 config.save(path)?;
@@ -78,6 +83,21 @@ impl Config {
             }
             Err(e) => Err(e).with_context(|| format!("could not read {}", path.display())),
         }
+    }
+
+    /// The settings in `bytes`, or what is wrong with them. The parser's own
+    /// `Display` quotes the offending line, which can hold an API key, and
+    /// this text goes to the log, so it gives only the line number and message.
+    fn parse(bytes: &[u8]) -> std::result::Result<Self, String> {
+        let text = std::str::from_utf8(bytes).map_err(|_| "the file is not UTF-8 text")?;
+        toml::from_str(text).map_err(|e: toml::de::Error| match e.span() {
+            Some(span) => {
+                let before = &bytes[..span.start.min(bytes.len())];
+                let line = before.iter().filter(|&&b| b == b'\n').count() + 1;
+                format!("line {line}: {}", e.message())
+            }
+            None => e.message().to_string(),
+        })
     }
 
     pub fn save(&self, path: &Path) -> Result<()> {
@@ -109,6 +129,27 @@ impl Config {
             && self.sources == other.sources
     }
 }
+
+/// The config file exists but doesn't hold valid settings. Only a hand edit
+/// gets it there.
+#[derive(Debug)]
+pub struct Unparseable {
+    path: PathBuf,
+    problem: String,
+}
+
+impl std::fmt::Display for Unparseable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "could not parse {}: {}",
+            self.path.display(),
+            self.problem
+        )
+    }
+}
+
+impl std::error::Error for Unparseable {}
 
 /// The keys for the keyed sources; empty when not set.
 #[derive(Debug, Clone, Default, PartialEq)]

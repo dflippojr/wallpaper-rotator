@@ -19,7 +19,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use crate::config::{Config, Keys, MIN_CACHE_MB};
+use crate::config::{Config, Keys, Unparseable, MIN_CACHE_MB};
 use crate::net::{self, Http};
 use crate::paths::Paths;
 use crate::source::{self, daily, favorites, pexels, unsplash, wallhaven, Candidate, SourceId};
@@ -267,13 +267,19 @@ impl Service {
     }
 
     fn build(paths: Paths, hooks: Hooks, http: Http, env_keys: bool) -> Result<Self> {
-        let config = Config::load_or_create(&paths.config_file)?;
+        // A broken file is logged and left for the user to fix: Save and Pause
+        // keep failing on it, so nothing writes these defaults over it.
+        let (config, broken) = match Config::load_or_create(&paths.config_file) {
+            Ok(config) => (config, None),
+            Err(e) if e.is::<Unparseable>() => (Config::default(), Some(e)),
+            Err(e) => return Err(e),
+        };
         let state = State::load(&paths.state_file);
         let seed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)
             .unwrap_or(1);
-        Ok(Self {
+        let service = Self {
             paths,
             config,
             state,
@@ -288,7 +294,11 @@ impl Service {
             resting: HashMap::new(),
             rng: seed | 1,
             env_keys,
-        })
+        };
+        if let Some(e) = broken {
+            service.log(&format!("error: {e:#}; using the default settings"));
+        }
+        Ok(service)
     }
 
     /// The Unsplash and Pexels keys in use.

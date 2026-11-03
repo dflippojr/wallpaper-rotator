@@ -493,7 +493,11 @@ fn main() {
                 pause_item: Mutex::new(None),
             });
             build_tray(&handle, first.settings.paused)?;
-            sync_autostart(&handle, first.settings.start_at_login);
+            // Defaults standing in for a broken config say nothing about what
+            // the user chose, so they mustn't turn the login item back on.
+            if Config::load_or_create(&paths.config_file).is_ok() {
+                sync_autostart(&handle, first.settings.start_at_login);
+            }
 
             #[cfg(target_os = "macos")]
             watch_spaces(handle.clone(), paths.clone(), current_layout.clone());
