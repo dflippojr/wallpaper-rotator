@@ -13,7 +13,8 @@ use common::stub_api::Route;
 use common::{config, screen, World, PEXELS_KEY, UNSPLASH_KEY};
 use image::{Rgb, RgbImage};
 use rotator_core::config::Config;
-use rotator_core::service::Command;
+use rotator_core::paths::Paths;
+use rotator_core::service::{Command, Hooks, Service};
 use rotator_core::source::SourceId;
 use rotator_core::wallpaper::Layout;
 
@@ -993,4 +994,126 @@ fn favorites_differing_only_by_extension_are_two_candidates() {
             photo.id
         );
     }
+}
+
+/// Config files only a hand edit can produce: each with what the log must
+/// say about it.
+const BROKEN_CONFIGS: [(&str, &[u8], &str); 3] = [
+    (
+        "invalid TOML",
+        b"query = \"mountains\"\ninterval_minutes = = 5\n",
+        "line 2",
+    ),
+    (
+        "a wrong-typed value",
+        b"query = \"mountains\"\ninterval_minutes = 1.5\n",
+        "expected u64",
+    ),
+    (
+        "not UTF-8, as Notepad's UTF-16 is",
+        b"\xff\xfeq\x00u\x00e\x00r\x00y\x00",
+        "UTF-8",
+    ),
+];
+
+fn log_text(paths: &Paths) -> String {
+    fs::read_to_string(&paths.log_file).unwrap_or_default()
+}
+
+#[test]
+fn service_new_starts_on_defaults_with_a_broken_config() {
+    for (what, bytes, problem) in BROKEN_CONFIGS {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        fs::create_dir_all(paths.config_file.parent().unwrap()).unwrap();
+        fs::write(&paths.config_file, bytes).unwrap();
+        let hooks = Hooks {
+            apply: Box::new(|_| Ok(())),
+            displays: Box::new(Vec::new),
+            notify: Box::new(|_| {}),
+        };
+
+        let service = Service::new(paths.clone(), hooks)
+            .unwrap_or_else(|e| panic!("{what} stopped the service: {e:#}"));
+
+        let settings = service.snapshot().settings;
+        let defaults = Config::default();
+        assert_eq!(
+            settings.interval_minutes, defaults.interval_minutes,
+            "{what}"
+        );
+        assert_eq!(settings.cache_cap_mb, defaults.cache_cap_mb, "{what}");
+        assert_eq!(settings.query, defaults.query, "{what}");
+        let log = log_text(&paths);
+        assert!(
+            log.contains(&paths.config_file.display().to_string()) && log.contains(problem),
+            "{what}: {log}"
+        );
+        assert_eq!(fs::read(&paths.config_file).unwrap(), bytes, "{what}");
+    }
+}
+
+#[test]
+fn a_broken_config_stays_byte_for_byte_while_the_worker_runs() {
+    for (what, bytes, _) in BROKEN_CONFIGS {
+        let mut w = World::with_config_file(bytes, vec![screen("a", 320, 200)]);
+        w.run(Command::Tick);
+        // Pause and Save re-read the file to change one setting; neither may
+        // write defaults over it.
+        let snap = w.run(Command::SetPaused(true));
+        assert!(snap.error.is_some(), "{what}");
+        assert!(!snap.settings.paused, "{what}");
+        let snap = w.run(Command::Reload);
+        assert!(snap.error.is_some(), "{what}");
+        assert_eq!(fs::read(&w.paths.config_file).unwrap(), bytes, "{what}");
+    }
+}
+
+#[test]
+fn fixing_a_broken_config_takes_effect_on_reload() {
+    let (_, bytes, _) = BROKEN_CONFIGS[0];
+    let mut w = World::with_config_file(bytes, vec![screen("a", 320, 200)]);
+    assert_eq!(w.run(Command::Tick).settings.query, "");
+
+    fs::write(&w.paths.config_file, "query = \"mountains\"\n").unwrap();
+
+    let snap = w.run(Command::Reload);
+    assert_eq!(snap.settings.query, "mountains");
+    assert_eq!(snap.error, None);
+}
+
+#[test]
+fn a_saved_key_on_a_broken_line_stays_out_of_the_log() {
+    // The parser's own error text quotes the line it stopped on.
+    let secret = "my-unquoted-key";
+    let file = format!("access_key = {secret}\n");
+    let mut w = World::with_config_file(file.as_bytes(), vec![screen("a", 320, 200)]);
+
+    let snap = w.run(Command::Reload);
+
+    let log = log_text(&w.paths);
+    assert!(log.contains("config.toml"), "{log}");
+    assert!(!log.contains(secret), "{log}");
+    assert!(!snap.error.unwrap().contains(secret));
+}
+
+#[test]
+fn only_a_saved_config_decides_the_login_item() {
+    // Defaults say true, so a fallback that passed them on would turn the
+    // login item back on for someone who turned it off.
+    let (_, bytes, _) = BROKEN_CONFIGS[0];
+    let mut w = World::with_config_file(bytes, vec![screen("a", 320, 200)]);
+    assert!(w.run(Command::Tick).settings.start_at_login);
+    assert_eq!(w.svc.saved_start_at_login(), None);
+
+    // A failed reload leaves it on the defaults.
+    w.run(Command::Reload);
+    assert_eq!(w.svc.saved_start_at_login(), None);
+
+    fs::write(&w.paths.config_file, "start_at_login = false\n").unwrap();
+    w.run(Command::Reload);
+    assert_eq!(w.svc.saved_start_at_login(), Some(false));
+
+    let w = World::with_config_file(b"start_at_login = false\n", vec![]);
+    assert_eq!(w.svc.saved_start_at_login(), Some(false));
 }

@@ -232,6 +232,40 @@ fn rotate_without_sources_explains_how_to_configure_them() {
 }
 
 #[test]
+fn a_broken_config_runs_on_defaults_and_keeps_the_file() {
+    let cli = Cli::new(vec![]);
+    let broken = b"interval_minutes = 1.5\n";
+    fs::write(&cli.paths.config_file, broken).unwrap();
+
+    // The defaults' only source is Unsplash, and there is no key here.
+    let output = cli.run(&["rotate", "--dry-run"]);
+
+    assert!(!output.status.success(), "{output:?}");
+    let error = String::from_utf8(output.stderr).unwrap();
+    assert!(error.contains("tick a photo source in Settings"), "{error}");
+    assert!(
+        error.contains(&cli.paths.config_file.display().to_string()),
+        "{error}"
+    );
+    assert!(error.contains("expected u64"), "{error}");
+    assert_eq!(fs::read(&cli.paths.config_file).unwrap(), broken);
+}
+
+#[test]
+fn cleanup_refuses_a_broken_config_rather_than_trim_to_the_default_cap() {
+    let cli = Cli::new(vec![]);
+    let broken = b"interval_minutes = 1.5\n";
+    fs::write(&cli.paths.config_file, broken).unwrap();
+
+    let output = cli.run(&["cleanup"]);
+
+    assert!(!output.status.success(), "{output:?}");
+    let error = String::from_utf8(output.stderr).unwrap();
+    assert!(error.contains("could not parse"), "{error}");
+    assert_eq!(fs::read(&cli.paths.config_file).unwrap(), broken);
+}
+
+#[test]
 fn status_without_state_reports_none() {
     let cli = Cli::new(vec![]);
     assert!(!cli.paths.state_file.exists());
