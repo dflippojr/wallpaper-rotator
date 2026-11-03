@@ -115,7 +115,9 @@ impl Config {
     }
 
     pub fn cache_cap_bytes(&self) -> u64 {
-        self.cache_cap_mb.max(MIN_CACHE_MB) * 1024 * 1024
+        self.cache_cap_mb
+            .max(MIN_CACHE_MB)
+            .saturating_mul(1024 * 1024)
     }
 
     /// The settings that shape fetched photos; prefetched photos are dropped
@@ -213,6 +215,26 @@ mod tests {
             ..Config::default()
         };
         assert_eq!(config.cache_cap_bytes(), 20 * 1024 * 1024);
+    }
+
+    #[test]
+    fn cache_cap_saturates_instead_of_overflowing() {
+        // The first size whose bytes don't fit in a u64, and the largest.
+        for cache_cap_mb in [u64::MAX / (1024 * 1024) + 1, u64::MAX] {
+            let config = Config {
+                cache_cap_mb,
+                ..Config::default()
+            };
+            assert_eq!(config.cache_cap_bytes(), u64::MAX, "{cache_cap_mb} MB");
+        }
+        let config = Config {
+            cache_cap_mb: u64::MAX / (1024 * 1024),
+            ..Config::default()
+        };
+        assert_eq!(
+            config.cache_cap_bytes(),
+            u64::MAX / (1024 * 1024) * 1024 * 1024
+        );
     }
 
     #[test]

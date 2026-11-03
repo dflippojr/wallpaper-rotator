@@ -299,6 +299,11 @@ impl Service {
             env_keys,
             on_fallback_defaults: broken.is_some(),
         };
+        if service.state.keep_cache {
+            service.log(
+                "the saved state was lost, so cached images are kept until a new photo is on screen",
+            );
+        }
         if let Some(e) = broken {
             service.log(&format!("error: {e:#}; using the default settings"));
         }
@@ -385,7 +390,7 @@ impl Service {
 
     pub fn snapshot(&self) -> Snapshot {
         let next_rotation_at = (!self.config.paused && self.config.interval_minutes > 0)
-            .then(|| self.state.last_rotated + self.config.interval_minutes * 60);
+            .then(|| self.state.last_rotated.saturating_add(self.interval_secs()));
         let keys = self.keys();
         Snapshot {
             current: self
@@ -547,8 +552,13 @@ impl Service {
         }
         !self.config.paused
             && self.config.interval_minutes > 0
-            && now() >= self.state.last_rotated + self.config.interval_minutes * 60
+            && now() >= self.state.last_rotated.saturating_add(self.interval_secs())
             && now() >= self.last_failed_fetch + RETRY_AFTER_SECS
+    }
+
+    /// The rotation interval in seconds; a huge hand-edited value saturates.
+    fn interval_secs(&self) -> u64 {
+        self.config.interval_minutes.saturating_mul(60)
     }
 
     fn rotate_and_prefetch(&mut self, only: Option<usize>) {
@@ -598,6 +608,7 @@ impl Service {
         }
         self.state.current = Some(next);
         self.state.last_rotated = now();
+        self.state.keep_cache = false;
         self.save_state();
         self.cleanup();
         Ok(())
@@ -1344,6 +1355,21 @@ mod tests {
         svc.config.paused = true;
         fs::remove_file(&svc.state.current.as_ref().unwrap().photos[0].file).unwrap();
         assert!(svc.rotation_due());
+    }
+
+    #[test]
+    fn huge_intervals_saturate_instead_of_overflowing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut svc = service(dir.path());
+        svc.config.access_key = "k".into();
+        svc.state.current = Some(cached(&svc, "cur"));
+        svc.state.last_rotated = now();
+        // The first interval whose seconds don't fit in a u64, and the largest.
+        for minutes in [u64::MAX / 60 + 1, u64::MAX] {
+            svc.config.interval_minutes = minutes;
+            assert!(!svc.rotation_due(), "{minutes} minutes");
+            assert_eq!(svc.snapshot().next_rotation_at, Some(u64::MAX));
+        }
     }
 
     #[test]
