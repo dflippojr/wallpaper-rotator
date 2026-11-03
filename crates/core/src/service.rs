@@ -10,7 +10,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -1041,10 +1041,7 @@ impl Service {
             .collect();
         // A new name each time, so GNOME notices the change.
         let first = set.photos.first().map_or("photo", |w| w.id.as_str());
-        let dest = self
-            .paths
-            .images_dir
-            .join(format!("span-{}-{}.jpg", cache_stem(first), now()));
+        let dest = span_path(&self.paths.images_dir, first);
         wallpaper::compose(&parts, &dest)?;
         set.spanned = Some(dest);
         Ok(set)
@@ -1239,6 +1236,20 @@ fn cache_stem(id: &str) -> String {
     format!("{readable}-{hash}")
 }
 
+/// A new file for a stitched image, named for its first photo and the time,
+/// with a number added while that name is taken. An existing file is never
+/// picked: GNOME may be showing it, and stitching over it changes the screen.
+fn span_path(images_dir: &Path, first: &str) -> PathBuf {
+    let stem = format!("span-{}-{}", cache_stem(first), now());
+    let mut dest = images_dir.join(format!("{stem}.jpg"));
+    let mut n = 1;
+    while dest.exists() {
+        dest = images_dir.join(format!("{stem}-{n}.jpg"));
+        n += 1;
+    }
+    dest
+}
+
 #[cfg(test)]
 mod tests {
     //! Pure logic with many branches. Whole journeys through `Command`s,
@@ -1246,7 +1257,6 @@ mod tests {
     use super::*;
     use crate::source::tests::png;
     use crate::source::Image;
-    use std::path::Path;
 
     fn screen(id: &str, width: u32, height: u32) -> Display {
         Display {
