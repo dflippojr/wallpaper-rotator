@@ -106,6 +106,14 @@ impl World {
         }
     }
 
+    /// Quits this worker and starts a new one on the same files, as when
+    /// the app restarts.
+    pub fn restart(self) -> Self {
+        let screens = self.screens.lock().unwrap().clone();
+        drop(self.svc);
+        Self::start(self._dir, self.paths, screens)
+    }
+
     /// Starts the worker thread as the app does, lets it finish its startup
     /// work (cleanup and the first tick) and stops it. Returns what the
     /// worker left: the files in the image cache, sorted, and the layouts it

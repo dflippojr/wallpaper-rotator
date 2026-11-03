@@ -1166,6 +1166,23 @@ fn an_unparseable_state_file_also_keeps_the_cache_through_a_reload() {
 }
 
 #[test]
+fn an_unparseable_state_file_keeps_the_cache_after_a_save_and_a_restart() {
+    // Saving Settings writes a valid state.json before any new photo is on
+    // screen; the next start must still keep the cache.
+    let mut w = World::with_state_file(
+        no_fetching(),
+        |_| b"{not json".to_vec(),
+        &["shown.jpg"],
+        vec![screen("1", 160, 90)],
+    );
+    w.configure(|c| c.cache_cap_mb = 30);
+
+    let (files, _) = w.restart().start_up();
+
+    assert_eq!(names(&files), ["shown.jpg"]);
+}
+
+#[test]
 fn an_unparseable_state_file_cleans_up_once_a_new_photo_is_on_screen() {
     let w = World::with_state_file(
         config(&[SourceId::Unsplash]),
