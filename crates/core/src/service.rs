@@ -1437,6 +1437,40 @@ mod tests {
         assert_eq!(largest(&[]), None);
     }
 
+    /// The prefetch can stitch a set in the same second as the one on screen,
+    /// with the same first photo. Each stitched image needs its own file, or
+    /// the prefetch overwrites the file that is showing.
+    #[test]
+    fn stitched_images_in_the_same_second_get_their_own_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = service(dir.path());
+        let left = Display {
+            x: 0,
+            ..screen("1", 160, 90)
+        };
+        let right = Display {
+            x: 160,
+            ..screen("2", 160, 90)
+        };
+        let mut set = Set {
+            photos: vec![
+                photo(&svc, "same", Some(left.clone())),
+                photo(&svc, "other", Some(right.clone())),
+            ],
+            spanned: None,
+        };
+        for photo in &mut set.photos {
+            photo.file = png(&svc.paths.images_dir, &format!("{}.png", photo.id), 160, 90);
+        }
+        let displays = [left, right];
+
+        let first = svc.stitch(set.clone(), &displays).unwrap().spanned.unwrap();
+        let second = svc.stitch(set, &displays).unwrap().spanned.unwrap();
+
+        assert_ne!(first, second, "two stitched sets share one file");
+        assert!(first.exists() && second.exists());
+    }
+
     #[test]
     fn safe_names() {
         assert_eq!(safe_name("Ann / Lee"), "Ann _ Lee");

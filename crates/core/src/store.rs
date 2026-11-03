@@ -373,6 +373,42 @@ mod tests {
     }
 
     #[test]
+    fn stale_stitched_images_go_and_current_and_next_ones_stay() {
+        let dir = tempfile::tempdir().unwrap();
+        let images = dir.path();
+        let stitched = |name: &str| {
+            let file = images.join(name);
+            fs::write(&file, b"x").unwrap();
+            file
+        };
+        let state_current = Set {
+            photos: vec![wallpaper(images, "cur", 10)],
+            spanned: Some(stitched("span-cur.jpg")),
+        };
+        let state_next = Set {
+            photos: vec![wallpaper(images, "nxt", 10)],
+            spanned: Some(stitched("span-nxt.jpg")),
+        };
+        stitched("span-old.jpg");
+        stitched("span-old-1.jpg");
+        let mut state = State {
+            current: Some(state_current),
+            next: Some(state_next),
+            ..State::default()
+        };
+
+        let report = cleanup(images, &mut state, u64::MAX).unwrap();
+
+        assert_eq!(report.removed_files, 2);
+        let mut left: Vec<_> = fs::read_dir(images)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        left.sort();
+        assert_eq!(left, ["cur.jpg", "nxt.jpg", "span-cur.jpg", "span-nxt.jpg"]);
+    }
+
+    #[test]
     fn reads_state_saved_by_version_0_1() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.json");
