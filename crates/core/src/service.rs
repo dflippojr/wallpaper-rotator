@@ -1476,11 +1476,19 @@ mod tests {
         }
         let displays = [left, right];
 
-        let first = svc.stitch(set.clone(), &displays).unwrap().spanned.unwrap();
-        let second = svc.stitch(set, &displays).unwrap().spanned.unwrap();
-
-        assert_ne!(first, second, "two stitched sets share one file");
-        assert!(first.exists() && second.exists());
+        // Both stitches must fall in one second, and the clock can't be held
+        // still here, so retry until it reads the same before and after both.
+        for _ in 0..100 {
+            let before = now();
+            let first = svc.stitch(set.clone(), &displays).unwrap().spanned.unwrap();
+            let second = svc.stitch(set.clone(), &displays).unwrap().spanned.unwrap();
+            if now() == before {
+                assert_ne!(first, second, "two stitched sets share one file");
+                assert!(first.exists() && second.exists());
+                return;
+            }
+        }
+        panic!("the clock moved on every attempt, so no two stitches shared a second");
     }
 
     #[test]
