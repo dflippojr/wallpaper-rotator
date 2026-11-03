@@ -1449,7 +1449,9 @@ mod tests {
 
     /// The prefetch can stitch a set in the same second as the one on screen,
     /// with the same first photo. Each stitched image needs its own file, or
-    /// the prefetch overwrites the file that is showing.
+    /// the prefetch overwrites the file that is showing. Only GNOME stitches
+    /// (`wallpaper::compose` fails elsewhere), so the test runs on Linux only.
+    #[cfg(target_os = "linux")]
     #[test]
     fn stitched_images_in_the_same_second_get_their_own_files() {
         let dir = tempfile::tempdir().unwrap();
