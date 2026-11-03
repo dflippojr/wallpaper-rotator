@@ -10,7 +10,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -1041,10 +1041,7 @@ impl Service {
             .collect();
         // A new name each time, so GNOME notices the change.
         let first = set.photos.first().map_or("photo", |w| w.id.as_str());
-        let dest = self
-            .paths
-            .images_dir
-            .join(format!("span-{}-{}.jpg", cache_stem(first), now()));
+        let dest = span_path(&self.paths.images_dir, first);
         wallpaper::compose(&parts, &dest)?;
         set.spanned = Some(dest);
         Ok(set)
@@ -1239,6 +1236,20 @@ fn cache_stem(id: &str) -> String {
     format!("{readable}-{hash}")
 }
 
+/// A new file for a stitched image, named for its first photo and the time,
+/// with a number added while that name is taken. An existing file is never
+/// picked: GNOME may be showing it, and stitching over it changes the screen.
+fn span_path(images_dir: &Path, first: &str) -> PathBuf {
+    let stem = format!("span-{}-{}", cache_stem(first), now());
+    let mut dest = images_dir.join(format!("{stem}.jpg"));
+    let mut n = 1;
+    while dest.exists() {
+        dest = images_dir.join(format!("{stem}-{n}.jpg"));
+        n += 1;
+    }
+    dest
+}
+
 #[cfg(test)]
 mod tests {
     //! Pure logic with many branches. Whole journeys through `Command`s,
@@ -1246,7 +1257,6 @@ mod tests {
     use super::*;
     use crate::source::tests::png;
     use crate::source::Image;
-    use std::path::Path;
 
     fn screen(id: &str, width: u32, height: u32) -> Display {
         Display {
@@ -1435,6 +1445,50 @@ mod tests {
         let screens = [screen("1", 3024, 1964), screen("2", 2560, 2880)];
         assert_eq!(largest(&screens), Some((3024, 2880)));
         assert_eq!(largest(&[]), None);
+    }
+
+    /// The prefetch can stitch a set in the same second as the one on screen,
+    /// with the same first photo. Each stitched image needs its own file, or
+    /// the prefetch overwrites the file that is showing. Only GNOME stitches
+    /// (`wallpaper::compose` fails elsewhere), so the test runs on Linux only.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn stitched_images_in_the_same_second_get_their_own_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = service(dir.path());
+        let left = Display {
+            x: 0,
+            ..screen("1", 160, 90)
+        };
+        let right = Display {
+            x: 160,
+            ..screen("2", 160, 90)
+        };
+        let mut set = Set {
+            photos: vec![
+                photo(&svc, "same", Some(left.clone())),
+                photo(&svc, "other", Some(right.clone())),
+            ],
+            spanned: None,
+        };
+        for photo in &mut set.photos {
+            photo.file = png(&svc.paths.images_dir, &format!("{}.png", photo.id), 160, 90);
+        }
+        let displays = [left, right];
+
+        // Both stitches must fall in one second, and the clock can't be held
+        // still here, so retry until it reads the same before and after both.
+        for _ in 0..100 {
+            let before = now();
+            let first = svc.stitch(set.clone(), &displays).unwrap().spanned.unwrap();
+            let second = svc.stitch(set.clone(), &displays).unwrap().spanned.unwrap();
+            if now() == before {
+                assert_ne!(first, second, "two stitched sets share one file");
+                assert!(first.exists() && second.exists());
+                return;
+            }
+        }
+        panic!("the clock moved on every attempt, so no two stitches shared a second");
     }
 
     #[test]
