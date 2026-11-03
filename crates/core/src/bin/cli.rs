@@ -36,7 +36,14 @@ fn main() -> Result<()> {
         Some("status") => status(&paths),
         Some("cleanup") => {
             let config = Config::load_or_create(&paths.config_file)?;
-            let mut state = State::load(&paths.state_file);
+            let (mut state, lost) = State::load_checked(&paths.state_file);
+            if lost {
+                bail!(
+                    "could not read {}, so it's unknown which cached image the desktop shows; \
+                     rotate first, then clean up",
+                    paths.state_file.display()
+                );
+            }
             let report = store::cleanup(&paths.images_dir, &mut state, config.cache_cap_bytes())?;
             state.save(&paths.state_file)?;
             println!(

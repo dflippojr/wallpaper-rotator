@@ -255,6 +255,10 @@ pub struct Service {
     /// The config file couldn't be parsed, so `config` is the defaults rather
     /// than what the user saved.
     on_fallback_defaults: bool,
+    /// `state.json` couldn't be parsed, so the state doesn't know which
+    /// cached image the desktop shows. Cleanup deletes nothing until a newly
+    /// fetched photo is on screen.
+    keep_cache: bool,
 }
 
 impl Service {
@@ -277,7 +281,7 @@ impl Service {
             Err(e) if e.is::<Unparseable>() => (Config::default(), Some(e)),
             Err(e) => return Err(e),
         };
-        let state = State::load(&paths.state_file);
+        let (state, state_lost) = State::load_checked(&paths.state_file);
         let seed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)
@@ -298,7 +302,14 @@ impl Service {
             rng: seed | 1,
             env_keys,
             on_fallback_defaults: broken.is_some(),
+            keep_cache: state_lost,
         };
+        if state_lost {
+            service.log(&format!(
+                "could not read {}; starting fresh, and keeping the cached images until a new photo is on screen",
+                service.paths.state_file.display()
+            ));
+        }
         if let Some(e) = broken {
             service.log(&format!("error: {e:#}; using the default settings"));
         }
@@ -385,7 +396,7 @@ impl Service {
 
     pub fn snapshot(&self) -> Snapshot {
         let next_rotation_at = (!self.config.paused && self.config.interval_minutes > 0)
-            .then(|| self.state.last_rotated + self.config.interval_minutes * 60);
+            .then(|| self.state.last_rotated.saturating_add(self.interval_secs()));
         let keys = self.keys();
         Snapshot {
             current: self
@@ -547,8 +558,13 @@ impl Service {
         }
         !self.config.paused
             && self.config.interval_minutes > 0
-            && now() >= self.state.last_rotated + self.config.interval_minutes * 60
+            && now() >= self.state.last_rotated.saturating_add(self.interval_secs())
             && now() >= self.last_failed_fetch + RETRY_AFTER_SECS
+    }
+
+    /// The rotation interval in seconds; a huge hand-edited value saturates.
+    fn interval_secs(&self) -> u64 {
+        self.config.interval_minutes.saturating_mul(60)
     }
 
     fn rotate_and_prefetch(&mut self, only: Option<usize>) {
@@ -598,6 +614,7 @@ impl Service {
         }
         self.state.current = Some(next);
         self.state.last_rotated = now();
+        self.keep_cache = false;
         self.save_state();
         self.cleanup();
         Ok(())
@@ -1134,6 +1151,9 @@ impl Service {
     }
 
     fn cleanup(&mut self) {
+        if self.keep_cache {
+            return;
+        }
         match store::cleanup(
             &self.paths.images_dir,
             &mut self.state,

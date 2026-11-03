@@ -266,6 +266,22 @@ fn cleanup_refuses_a_broken_config_rather_than_trim_to_the_default_cap() {
 }
 
 #[test]
+fn cleanup_keeps_the_cache_while_the_state_file_is_unparseable() {
+    let cli = Cli::new(vec![SourceId::Favorites]);
+    cli.rotate();
+    let before = cli.cached();
+    fs::write(&cli.paths.state_file, b"{not json").unwrap();
+
+    let output = cli.run(&["cleanup"]);
+
+    assert!(!output.status.success(), "{output:?}");
+    let error = String::from_utf8(output.stderr).unwrap();
+    assert!(error.contains("rotate first"), "{error}");
+    assert_eq!(cli.cached(), before);
+    assert_eq!(fs::read(&cli.paths.state_file).unwrap(), b"{not json");
+}
+
+#[test]
 fn status_without_state_reports_none() {
     let cli = Cli::new(vec![]);
     assert!(!cli.paths.state_file.exists());

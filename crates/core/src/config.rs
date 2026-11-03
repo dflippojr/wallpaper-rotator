@@ -115,7 +115,9 @@ impl Config {
     }
 
     pub fn cache_cap_bytes(&self) -> u64 {
-        self.cache_cap_mb.max(MIN_CACHE_MB) * 1024 * 1024
+        self.cache_cap_mb
+            .max(MIN_CACHE_MB)
+            .saturating_mul(1024 * 1024)
     }
 
     /// The settings that shape fetched photos; prefetched photos are dropped

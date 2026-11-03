@@ -119,10 +119,21 @@ impl State {
     /// Loads saved state. A missing or unreadable file starts fresh rather
     /// than blocking rotation.
     pub fn load(path: &Path) -> Self {
-        fs::read_to_string(path)
-            .ok()
-            .and_then(|text| serde_json::from_str(&text).ok())
-            .unwrap_or_default()
+        Self::load_checked(path).0
+    }
+
+    /// Like [`State::load`], and also says whether the file was there but
+    /// couldn't be read or parsed. The fresh state then knows nothing about
+    /// the images on disk, including the one on the desktop.
+    pub fn load_checked(path: &Path) -> (Self, bool) {
+        match fs::read_to_string(path) {
+            Ok(text) => match serde_json::from_str(&text) {
+                Ok(state) => (state, false),
+                Err(_) => (Self::default(), true),
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Self::default(), false),
+            Err(_) => (Self::default(), true),
+        }
     }
 
     pub fn save(&self, path: &Path) -> Result<()> {
@@ -324,8 +335,14 @@ mod tests {
         };
         state.save(&path).unwrap();
         assert_eq!(State::load(&path), state);
+        assert_eq!(State::load_checked(&path), (state, false));
         fs::write(&path, b"{not json").unwrap();
         assert_eq!(State::load(&path), State::default());
+        assert_eq!(State::load_checked(&path), (State::default(), true));
+        fs::write(&path, b"\xff\xfe not utf-8").unwrap();
+        assert_eq!(State::load_checked(&path), (State::default(), true));
+        fs::remove_file(&path).unwrap();
+        assert_eq!(State::load_checked(&path), (State::default(), false));
     }
 
     fn display(id: &str, width: u32) -> Display {
