@@ -188,10 +188,10 @@ mod tests {
     #[test]
     fn real_monitors_have_a_size_and_scale() {
         unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_UNAWARE) };
-        if let Ok(displays) = displays() {
-            for d in &displays {
-                assert!(d.width > 0 && d.height > 0 && d.scale >= 1.0, "{d:?}");
-            }
+        let displays = displays().expect("Windows lists its monitors");
+        assert!(!displays.is_empty(), "at least one monitor is attached");
+        for d in &displays {
+            assert!(d.width > 0 && d.height > 0 && d.scale >= 1.0, "{d:?}");
         }
         assert!(!thread_is_per_monitor_aware());
     }
