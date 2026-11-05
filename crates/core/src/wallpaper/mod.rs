@@ -24,19 +24,58 @@ mod span;
 mod windows;
 
 /// A screen, as far as choosing and placing photos goes.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Display {
     /// Identifies the display while it stays connected.
     pub id: String,
     /// Shown in the popover, such as "Built-in Retina Display".
     pub name: String,
-    /// Position in the layout, in the same pixels as `width` and `height`.
-    /// Only GNOME uses it, to stitch photos into one spanned image.
+    /// Top-left corner in the desktop's layout: points on macOS, desktop
+    /// pixels on Windows, logical pixels on GNOME. Only GNOME uses it, to
+    /// stitch photos into one spanned image.
     pub x: i32,
     pub y: i32,
-    /// The photo size to download for this display.
+    /// The display's physical pixels (its logical size times `scale`), as
+    /// it is turned now: the size its photo is downloaded and cropped to.
     pub width: u32,
     pub height: u32,
+    /// Physical pixels per logical pixel: 2 on a Retina panel, 1.5 for
+    /// Windows' 150 %. Lists saved before it existed read as 1.
+    #[serde(default = "unit_scale")]
+    pub scale: f64,
+}
+
+fn unit_scale() -> f64 {
+    1.0
+}
+
+impl Display {
+    /// The scale factor, or 1 when it makes no sense (zero, negative, NaN).
+    pub fn scale(&self) -> f64 {
+        if self.scale.is_finite() && self.scale > 0.0 {
+            self.scale
+        } else {
+            1.0
+        }
+    }
+
+    /// The display's size in the layout's logical pixels.
+    pub fn logical_size(&self) -> (f64, f64) {
+        let s = self.scale();
+        (f64::from(self.width) / s, f64::from(self.height) / s)
+    }
+
+    /// One line for the log and the `displays` command, such as
+    /// "Built-in: 3024x1964 pixels, scale 2".
+    pub fn describe(&self) -> String {
+        format!(
+            "{}: {}x{} pixels, scale {}",
+            self.name,
+            self.width,
+            self.height,
+            self.scale()
+        )
+    }
 }
 
 /// What to show where.
@@ -78,19 +117,22 @@ pub struct Monitor {
     pub scale: f64,
 }
 
-/// GNOME: the displays for the toolkit's monitors. GNOME's spanned
-/// wallpaper stretches across the layout in logical pixels, so positions
-/// are logical, scaled up by the highest scale factor to keep HiDPI screens
-/// sharp.
+/// GNOME: the displays for the toolkit's monitors. Each keeps its own
+/// physical size and scale; positions go back to GNOME's logical layout
+/// (the toolkit multiplies them by each monitor's own scale), where
+/// [`compose`] stitches the photos.
 pub fn toolkit_displays(monitors: &[Monitor]) -> Vec<Display> {
-    let k = monitors.iter().map(|m| m.scale).fold(1.0, f64::max);
     monitors
         .iter()
         .enumerate()
         .map(|(i, m)| {
-            let s = m.scale.max(0.1);
-            let px = |v: f64| (v / s * k).round();
-            let (x, y) = (px(f64::from(m.x)), px(f64::from(m.y)));
+            let scale = if m.scale.is_finite() && m.scale >= 0.1 {
+                m.scale
+            } else {
+                1.0
+            };
+            let logical = |v: i32| (f64::from(v) / scale).round() as i32;
+            let (x, y) = (logical(m.x), logical(m.y));
             let name = m
                 .name
                 .clone()
@@ -98,10 +140,11 @@ pub fn toolkit_displays(monitors: &[Monitor]) -> Vec<Display> {
             Display {
                 id: format!("{name}@{x},{y}"),
                 name,
-                x: x as i32,
-                y: y as i32,
-                width: px(f64::from(m.width)) as u32,
-                height: px(f64::from(m.height)) as u32,
+                x,
+                y,
+                width: m.width,
+                height: m.height,
+                scale,
             }
         })
         .collect()
@@ -222,5 +265,55 @@ mod tests {
         // Positions stay in GNOME's logical layout, where the monitors touch.
         let xs: Vec<_> = displays.iter().map(|d| d.x).collect();
         assert_eq!(xs, [0, 1512, 4072]);
+    }
+
+    #[test]
+    fn toolkit_displays_carry_each_monitor_scale() {
+        let displays = toolkit_displays(&mixed_monitors());
+        let scales: Vec<_> = displays.iter().map(|d| d.scale).collect();
+        assert_eq!(scales, [2.0, 1.0, 1.0]);
+        assert_eq!(displays[1].id, "External@1512,0");
+        assert_eq!(displays[0].logical_size(), (1512.0, 982.0));
+        assert_eq!(
+            displays[0].describe(),
+            "Built-in: 3024x1964 pixels, scale 2"
+        );
+
+        // A fractional scale, and nonsense ones that count as 1.
+        let mut odd = mixed_monitors();
+        odd[0].scale = 1.25;
+        odd[0].x = 0;
+        odd[1].x = 2500;
+        odd[1].scale = f64::NAN;
+        odd[2].name = None;
+        odd[2].scale = 0.0;
+        let displays = toolkit_displays(&odd);
+        let got: Vec<_> = displays.iter().map(|d| (d.x, d.scale)).collect();
+        assert_eq!(got, [(0, 1.25), (2500, 1.0), (4072, 1.0)]);
+        assert_eq!(displays[2].name, "Display 3");
+    }
+
+    #[test]
+    fn saved_displays_without_a_scale_read_as_scale_1() {
+        let old = r#"{"id":"a","name":"A","x":0,"y":0,"width":1920,"height":1080}"#;
+        let display: Display = serde_json::from_str(old).unwrap();
+        assert_eq!(display.scale, 1.0);
+        let round_trip: Display = serde_json::from_str(
+            &serde_json::to_string(&Display {
+                scale: 2.0,
+                ..display
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(round_trip.scale, 2.0);
+        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let d = Display {
+                scale: bad,
+                ..round_trip.clone()
+            };
+            assert_eq!(d.scale(), 1.0, "{bad}");
+            assert_eq!(d.logical_size(), (1920.0, 1080.0));
+        }
     }
 }

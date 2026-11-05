@@ -495,10 +495,12 @@ impl Service {
     }
 
     /// Asks the platform for the displays, keeping the last known list if
-    /// it can't say.
+    /// it can't say. Logs each new list with every display's size and scale.
     fn live_displays(&mut self) -> Vec<Display> {
         let live = (self.hooks.displays)();
-        if !live.is_empty() {
+        if !live.is_empty() && live != self.displays {
+            let list: Vec<String> = live.iter().map(Display::describe).collect();
+            self.log(&format!("displays: {}", list.join("; ")));
             self.displays = live;
         }
         self.displays.clone()
@@ -1299,6 +1301,7 @@ mod tests {
             y: 0,
             width,
             height,
+            scale: 1.0,
         }
     }
 

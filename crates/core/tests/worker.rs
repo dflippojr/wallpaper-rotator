@@ -16,7 +16,7 @@ use rotator_core::config::Config;
 use rotator_core::paths::Paths;
 use rotator_core::service::{Command, Hooks, Service};
 use rotator_core::source::SourceId;
-use rotator_core::wallpaper::Layout;
+use rotator_core::wallpaper::{Display, Layout};
 
 /// The topic ID `unsplash/topic.json` gives for "wallpapers".
 const WALLPAPERS_TOPIC: &str = "bo8jQKTaE0Y";
@@ -1237,13 +1237,12 @@ fn a_valid_state_file_cleans_up_stale_images_at_startup() {
 /// portrait one, as macOS and Windows list them: each in its own physical
 /// pixels. Sizes are a tenth of 3024x1964, 2560x1440 and 1440x2560 to keep
 /// the test light; positions are in the logical layout.
-fn mixed_layout() -> Vec<rotator_core::wallpaper::Display> {
-    let at =
-        |x: i32, s: rotator_core::wallpaper::Display| rotator_core::wallpaper::Display { x, ..s };
+fn mixed_layout() -> Vec<Display> {
+    let at = |x: i32, scale: f64, s: Display| Display { x, scale, ..s };
     vec![
-        at(0, screen("retina", 302, 196)),
-        at(151, screen("external", 256, 144)),
-        at(407, screen("portrait", 144, 256)),
+        at(0, 2.0, screen("retina", 302, 196)),
+        at(151, 1.0, screen("external", 256, 144)),
+        at(407, 1.0, screen("portrait", 144, 256)),
     ]
 }
 
@@ -1279,7 +1278,71 @@ fn each_display_gets_a_photo_fetched_and_cropped_at_its_own_size() {
             screens.len(),
             "a different photo on each display"
         );
+        assert_eq!(set.photos[0].display.as_ref().unwrap().scale, 2.0);
+        // GNOME stitches them on a canvas at the sharpest scale: the
+        // logical layout is 551x128, so twice that.
+        if cfg!(target_os = "linux") {
+            let spanned = set.spanned.as_ref().expect("GNOME gets one stitched image");
+            assert_eq!(image::image_dimensions(spanned).unwrap(), (1102, 512));
+        }
     }
+    let log = log_text(&w.paths);
+    assert!(
+        log.contains("displays: Screen retina: 302x196 pixels, scale 2; "),
+        "the log lists each display's size and scale: {log}"
+    );
+}
+
+#[test]
+fn a_resolution_or_scale_change_re_sizes_the_next_rotation() {
+    let mut w = World::new(
+        Config {
+            per_display: true,
+            ..config(&[SourceId::Favorites])
+        },
+        mixed_layout(),
+    );
+    w.add_favorites(&["a.png", "b.png", "c.png", "d.png", "e.png", "f.png"]);
+    assert_eq!(w.run(Command::Next(None)).error, None);
+    assert!(
+        w.state().next.is_some(),
+        "a set is prefetched for this layout"
+    );
+
+    // The panel switches to "More Space" (more pixels, same scale) and the
+    // external monitor to 150 % (same pixels, new scale).
+    let changed = {
+        let mut screens = mixed_layout();
+        screens[0].width = 346;
+        screens[0].height = 223;
+        screens[1].scale = 1.5;
+        screens
+    };
+    *w.screens.lock().unwrap() = changed.clone();
+    w.run(Command::Tick);
+    let next = w.state().next.expect("a set prefetched for the new layout");
+    let displays: Vec<_> = next
+        .photos
+        .iter()
+        .map(|p| p.display.clone().unwrap())
+        .collect();
+    assert_eq!(
+        displays, changed,
+        "the prefetched set follows the new layout"
+    );
+
+    assert_eq!(w.run(Command::Next(None)).error, None);
+    let current = w.state().current.unwrap();
+    for (photo, screen) in current.photos.iter().zip(&changed) {
+        assert_eq!(
+            image::image_dimensions(&photo.file).unwrap(),
+            (screen.width, screen.height),
+            "{} after the change",
+            screen.id
+        );
+        assert_eq!(photo.display.as_ref(), Some(screen));
+    }
+    assert!(log_text(&w.paths).contains("displays changed: 3 connected"));
 }
 
 #[test]

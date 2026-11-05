@@ -382,6 +382,7 @@ mod tests {
             y: 0,
             width,
             height: 1000,
+            scale: 1.0,
         }
     }
 

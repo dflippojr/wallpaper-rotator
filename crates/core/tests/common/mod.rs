@@ -198,5 +198,6 @@ pub fn screen(id: &str, width: u32, height: u32) -> Display {
         y: 0,
         width,
         height,
+        scale: 1.0,
     }
 }

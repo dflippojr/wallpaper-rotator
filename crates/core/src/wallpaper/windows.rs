@@ -1,9 +1,14 @@
 use anyhow::{anyhow, Result};
 use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::Foundation::RECT;
+use windows::Win32::Graphics::Gdi::{MonitorFromRect, MONITOR_DEFAULTTONEAREST};
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_ALL,
     COINIT_APARTMENTTHREADED,
+};
+use windows::Win32::UI::HiDpi::{
+    GetDpiForMonitor, SetThreadDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+    MDT_EFFECTIVE_DPI,
 };
 use windows::Win32::UI::Shell::{DesktopWallpaper, IDesktopWallpaper, DWPOS_FILL};
 
@@ -45,20 +50,54 @@ fn monitors(desktop: &IDesktopWallpaper) -> windows::core::Result<Vec<(String, R
     Ok(out)
 }
 
+/// Physical pixels per logical pixel for a monitor's effective DPI
+/// (96 DPI is 100 %).
+fn scale_for_dpi(dpi: u32) -> f64 {
+    if dpi == 0 {
+        1.0
+    } else {
+        f64::from(dpi) / 96.0
+    }
+}
+
+/// The monitor's scale factor, or 1 if Windows won't say.
+fn monitor_scale(rect: &RECT) -> f64 {
+    let (mut dpi_x, mut dpi_y) = (0, 0);
+    unsafe {
+        let monitor = MonitorFromRect(rect, MONITOR_DEFAULTTONEAREST);
+        if GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y).is_err() {
+            return 1.0;
+        }
+    }
+    scale_for_dpi(dpi_x)
+}
+
 pub fn displays() -> Result<Vec<Display>> {
-    let monitors = with_desktop(monitors)?;
-    Ok(monitors
-        .into_iter()
-        .enumerate()
-        .map(|(i, (id, rect))| Display {
-            id,
-            name: format!("Display {}", i + 1),
-            x: rect.left,
-            y: rect.top,
-            width: (rect.right - rect.left) as u32,
-            height: (rect.bottom - rect.top) as u32,
-        })
-        .collect())
+    // A process that isn't DPI aware (the CLI) sees scaled monitors at
+    // their logical size and every monitor at 96 DPI. Ask as a per-monitor
+    // aware thread so sizes are physical pixels and scales are real, as the
+    // tray app (aware already) sees them.
+    let previous =
+        unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
+    let displays = with_desktop(monitors).map(|monitors| {
+        monitors
+            .into_iter()
+            .enumerate()
+            .map(|(i, (id, rect))| Display {
+                id,
+                name: format!("Display {}", i + 1),
+                x: rect.left,
+                y: rect.top,
+                width: (rect.right - rect.left) as u32,
+                height: (rect.bottom - rect.top) as u32,
+                scale: monitor_scale(&rect),
+            })
+            .collect()
+    });
+    if !previous.0.is_null() {
+        unsafe { SetThreadDpiAwarenessContext(previous) };
+    }
+    displays
 }
 
 pub fn set(layout: &Layout) -> Result<()> {
@@ -78,4 +117,17 @@ pub fn set(layout: &Layout) -> Result<()> {
         }
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scale_follows_the_effective_dpi() {
+        assert_eq!(scale_for_dpi(96), 1.0);
+        assert_eq!(scale_for_dpi(144), 1.5);
+        assert_eq!(scale_for_dpi(192), 2.0);
+        assert_eq!(scale_for_dpi(0), 1.0);
+    }
 }

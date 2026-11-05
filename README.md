@@ -10,7 +10,7 @@ Other rotators save every photo they cycle through. This one keeps only the wall
 - Mixes photo sources, and fills in from the others when one is rate-limited or offline (see below).
 - One search ("mountains") for Unsplash, Pexels and Wallhaven, plus Unsplash topics (default: `wallpapers`), public collections or one photographer's photos.
 - Every photo is cropped to your screen's resolution instead of keeping the multi-MB original.
-- Optional different photo on each display, each sized for that display. The popover's refresh button then changes only the display you're viewing; the tray menu's "Next wallpaper" and the schedule change them all.
+- Optional different photo on each display, each downloaded and cropped to that display's own physical pixels (its logical size times its scale factor, so a Retina panel and a 1x external monitor each get a sharp photo of their own shape). With it off, one photo covers every display: it is sized to the widest width and the tallest height of any display, in physical pixels, and each display crops it to fill. The popover's refresh button then changes only the display you're viewing; the tray menu's "Next wallpaper" and the schedule change them all.
 - Tray popover: preview, location, next, save to favorites, photographer credit, settings.
 - Starts at login (release builds).
 
@@ -260,8 +260,8 @@ Files live in the platform folders (`wallpaper-rotator-cli paths` prints them): 
 ### Platform notes
 
 - **macOS** sets wallpapers per Space. When you switch to a Space still showing an older photo from the cache, the app switches it to the current one.
-- **GNOME** has no click events for tray icons, so the tray icon opens a menu (Show, Next, Save to favorites, Pause, Quit). Ubuntu's AppIndicator extension, on by default, shows it. GNOME has a single wallpaper for all monitors, so with a photo per display the app stitches them into one image laid out like your monitors and sets it as "spanned".
-- **Per display:** bigger displays pick first, each taking the queued photo that covers it best (asking its source for a new batch when none fits well). When monitors come or go, the current photos are re-placed (a new display borrows one) and the next rotation fetches photos sized for the new layout.
+- **GNOME** has no click events for tray icons, so the tray icon opens a menu (Show, Next, Save to favorites, Pause, Quit). Ubuntu's AppIndicator extension, on by default, shows it. GNOME has a single wallpaper for all monitors, so with a photo per display the app stitches them into one image laid out like your monitors and sets it as "spanned". The stitched image is drawn at the highest scale factor of any monitor; a lower-scale monitor's photo is scaled up evenly there and GNOME scales it back down to that monitor's pixels.
+- **Per display:** bigger displays pick first, each taking the queued photo that covers it best (asking its source for a new batch when none fits well). When monitors come or go, or a display's resolution or scale changes, the current photos are re-placed (a new display borrows one) and the next rotation fetches photos sized for the new layout. `wallpaper-rotator-cli displays` lists each display's physical size and scale factor on macOS and Windows; on GNOME, where only the tray app can list monitors, the app's log records the same line whenever the list changes.
 - **Windows** copies the wallpaper into its own cache, so deleting old files is always safe.
 
 ### API terms

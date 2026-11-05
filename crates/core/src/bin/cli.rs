@@ -4,7 +4,8 @@
 //!                                           overrides the display size)
 //!   wallpaper-rotator-cli status   show the current wallpaper and cache size
 //!   wallpaper-rotator-cli cleanup  enforce the cache rules
-//!   wallpaper-rotator-cli displays list displays and the photo size for each
+//!   wallpaper-rotator-cli displays list displays, their scale and the photo
+//!                                  size (physical pixels) for each
 //!   wallpaper-rotator-cli paths    show where files live
 //!
 //! Don't run `rotate` while the tray app is running; both would manage the
@@ -58,10 +59,7 @@ fn main() -> Result<()> {
                 bail!("this platform lists displays only from the tray app");
             };
             for d in displays {
-                println!(
-                    "{}: {}x{} at {},{} (id {})",
-                    d.name, d.width, d.height, d.x, d.y, d.id
-                );
+                println!("{}, at {},{} (id {})", d.describe(), d.x, d.y, d.id);
             }
             Ok(())
         }
@@ -120,6 +118,7 @@ fn size_from_env() -> Option<Vec<Display>> {
         y: 0,
         width: w.parse().ok()?,
         height: h.parse().ok()?,
+        scale: 1.0,
     }])
 }
 
