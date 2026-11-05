@@ -72,15 +72,29 @@ fn monitor_scale(rect: &RECT) -> f64 {
     scale_for_dpi(dpi_x)
 }
 
-pub fn displays() -> Result<Vec<Display>> {
-    // A process that isn't DPI aware (the CLI) sees scaled monitors at
-    // their logical size and every monitor at 96 DPI. Ask as a per-monitor
-    // aware thread so sizes are physical pixels and scales are real, as the
-    // tray app (aware already) sees them.
+/// Runs `f` as a per-monitor (v2) DPI aware thread, then puts the thread's
+/// awareness back.
+fn per_monitor_aware<T>(f: impl FnOnce() -> T) -> T {
     let previous =
         unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
-    let displays = with_desktop(monitors).map(|monitors| {
-        monitors
+    let result = f();
+    if !previous.0.is_null() {
+        unsafe { SetThreadDpiAwarenessContext(previous) };
+    }
+    result
+}
+
+pub fn displays() -> Result<Vec<Display>> {
+    displays_from(|| with_desktop(monitors))
+}
+
+/// A process that isn't DPI aware (the CLI) sees scaled monitors at their
+/// logical size and every monitor at 96 DPI. `enumerate` and the scale
+/// lookups run as a per-monitor aware thread, so sizes are physical pixels
+/// and scales are real, as the tray app (aware already) sees them.
+fn displays_from(enumerate: impl FnOnce() -> Result<Vec<(String, RECT)>>) -> Result<Vec<Display>> {
+    per_monitor_aware(|| {
+        Ok(enumerate()?
             .into_iter()
             .enumerate()
             .map(|(i, (id, rect))| Display {
@@ -92,12 +106,8 @@ pub fn displays() -> Result<Vec<Display>> {
                 height: (rect.bottom - rect.top) as u32,
                 scale: monitor_scale(&rect),
             })
-            .collect()
-    });
-    if !previous.0.is_null() {
-        unsafe { SetThreadDpiAwarenessContext(previous) };
-    }
-    displays
+            .collect())
+    })
 }
 
 pub fn set(layout: &Layout) -> Result<()> {
@@ -122,6 +132,69 @@ pub fn set(layout: &Layout) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use windows::Win32::UI::HiDpi::{
+        AreDpiAwarenessContextsEqual, GetThreadDpiAwarenessContext, DPI_AWARENESS_CONTEXT_UNAWARE,
+    };
+
+    fn thread_is_per_monitor_aware() -> bool {
+        unsafe {
+            AreDpiAwarenessContextsEqual(
+                GetThreadDpiAwarenessContext(),
+                DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+            )
+            .as_bool()
+        }
+    }
+
+    /// The test binary has no DPI manifest, so it starts unaware, like the
+    /// CLI. Monitors must be listed (and scales read) as an aware thread, and
+    /// the thread must be unaware again afterwards.
+    #[test]
+    fn monitors_are_listed_as_a_per_monitor_aware_thread() {
+        assert!(
+            !thread_is_per_monitor_aware(),
+            "the test thread starts unaware"
+        );
+        let mut aware_while_listing = false;
+        let displays = displays_from(|| {
+            aware_while_listing = thread_is_per_monitor_aware();
+            let rect = RECT {
+                left: -2560,
+                top: 0,
+                right: 0,
+                bottom: 1440,
+            };
+            Ok(vec![("\\\\?\\DISPLAY#TEST".into(), rect)])
+        })
+        .unwrap();
+        assert!(
+            aware_while_listing,
+            "listed without per-monitor DPI awareness"
+        );
+        assert!(
+            !thread_is_per_monitor_aware(),
+            "the thread's awareness is restored"
+        );
+        assert_eq!(
+            (displays[0].x, displays[0].width, displays[0].height),
+            (-2560, 2560, 1440)
+        );
+        assert!(displays[0].scale >= 1.0);
+    }
+
+    /// The real list on this machine: every monitor has a size and a scale,
+    /// and asking leaves the thread as it was.
+    #[test]
+    fn real_monitors_have_a_size_and_scale() {
+        unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_UNAWARE) };
+        if let Ok(displays) = displays() {
+            for d in &displays {
+                assert!(d.width > 0 && d.height > 0 && d.scale >= 1.0, "{d:?}");
+            }
+        }
+        assert!(!thread_is_per_monitor_aware());
+    }
 
     #[test]
     fn scale_follows_the_effective_dpi() {

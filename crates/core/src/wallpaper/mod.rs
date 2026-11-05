@@ -117,7 +117,9 @@ pub struct Monitor {
     pub scale: f64,
 }
 
-/// GNOME: the displays for the toolkit's monitors. Each keeps its own
+/// Linux, when Mutter can't be asked: the displays for the toolkit's
+/// monitors. GTK 3 rounds fractional scales up to whole ones, so there its
+/// sizes can be off; Mutter's list ([`displays`]) has the real ones. Each keeps its own
 /// physical size and scale; positions go back to GNOME's logical layout
 /// (the toolkit multiplies them by each monitor's own scale), where
 /// [`compose`] stitches the photos.
@@ -150,13 +152,17 @@ pub fn toolkit_displays(monitors: &[Monitor]) -> Vec<Display> {
         .collect()
 }
 
-/// The connected displays, where the platform can list them itself. GNOME
-/// returns `None`; the app reads monitors from the windowing toolkit there.
+/// The connected displays, where the platform can list them itself: on
+/// GNOME from Mutter's display service. `None` when that fails (another
+/// Linux desktop, say); the app then reads monitors from the windowing
+/// toolkit ([`toolkit_displays`]).
 pub fn displays() -> Option<Vec<Display>> {
     #[cfg(windows)]
     return windows::displays().ok();
     #[cfg(target_os = "macos")]
     return macos::displays().ok();
+    #[cfg(target_os = "linux")]
+    return gnome::displays().ok();
     #[allow(unreachable_code)]
     None
 }

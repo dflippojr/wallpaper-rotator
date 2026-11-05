@@ -61,8 +61,8 @@ fn apply_wallpaper(app: &AppHandle, layout: &Layout) -> anyhow::Result<()> {
     }
 }
 
-/// The platform's own display list (macOS, Windows), or else the monitors
-/// the windowing toolkit reports (GNOME).
+/// The platform's own display list (macOS, Windows, GNOME's Mutter), or
+/// else the monitors the windowing toolkit reports.
 fn displays(app: &AppHandle) -> Vec<Display> {
     let native = if wallpaper::NEEDS_MAIN_THREAD {
         on_main(app, wallpaper::displays).ok().flatten()
@@ -72,7 +72,7 @@ fn displays(app: &AppHandle) -> Vec<Display> {
     native.unwrap_or_else(|| toolkit_displays(app))
 }
 
-/// Monitors as GTK sees them (GNOME).
+/// Monitors as GTK sees them (Linux without Mutter).
 fn toolkit_displays(app: &AppHandle) -> Vec<Display> {
     let monitors: Vec<Monitor> = app
         .available_monitors()

@@ -199,7 +199,7 @@ mod tests {
         let (ax, _, aw, _) = rects[0];
         let (bx, _, bw, _) = rects[1];
         assert_eq!(ax, 0);
-        assert!(bx >= ax + i64::from(aw) - 1, "they overlap: {rects:?}");
+        assert_eq!(bx, ax + i64::from(aw), "they must touch: {rects:?}");
         assert_eq!(i64::from(canvas.0), bx + i64::from(bw));
         assert!(placements(&[]).is_err());
     }

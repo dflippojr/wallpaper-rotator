@@ -56,7 +56,10 @@ fn main() -> Result<()> {
         }
         Some("displays") => {
             let Some(displays) = wallpaper::displays() else {
-                bail!("this platform lists displays only from the tray app");
+                bail!(
+                    "GNOME's display service did not answer, so this platform lists displays \
+                     only from the tray app here"
+                );
             };
             for d in displays {
                 println!("{}, at {},{} (id {})", d.describe(), d.x, d.y, d.id);
