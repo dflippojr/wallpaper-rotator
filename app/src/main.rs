@@ -4,7 +4,7 @@
 #[cfg(any(all(windows, debug_assertions), test))]
 mod automation;
 
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use rotator_core::config::Config;
 use rotator_core::log;
 use rotator_core::paths::Paths;
-use rotator_core::service::{Command, Hooks, Service, Settings, Snapshot, WallpaperView};
+use rotator_core::service::{self, Command, Hooks, Service, Settings, Snapshot, WallpaperView};
 use rotator_core::source::SourceId;
 use rotator_core::wallpaper::{self, Display, Layout, Monitor};
 use tauri::image::Image;
@@ -148,13 +148,28 @@ fn open_link(app: AppHandle, url: String) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// Opens the favorites folder in Finder, Explorer or the GNOME file manager.
+/// It takes no path: the folder comes from the saved config, so the page
+/// can't open anything else.
 #[tauri::command]
 fn open_favorites(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
-    let dir = PathBuf::from(&state.snapshot.lock().unwrap().favorites_dir);
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    app.opener()
-        .open_path(dir.to_string_lossy(), None::<&str>)
-        .map_err(|e| e.to_string())
+    open_favorites_with(&state.paths, |dir| {
+        // The opener hands the path to the platform's launcher as one
+        // argument; no shell parses it.
+        app.opener()
+            .open_path(dir.to_string_lossy(), None::<&str>)
+            .map_err(|e| e.to_string())
+    })
+}
+
+/// Creates the configured favorites folder if needed and passes it to `open`.
+/// Errors say why the folder can't be opened, for the popover to show.
+fn open_favorites_with(
+    paths: &Paths,
+    open: impl FnOnce(&Path) -> Result<(), String>,
+) -> Result<(), String> {
+    let dir = service::favorites_folder(paths).map_err(|e| format!("{e:#}"))?;
+    open(&dir).map_err(|e| format!("could not open {}: {e}", dir.display()))
 }
 
 #[tauri::command]
@@ -401,7 +416,7 @@ fn main() {
             &mut context.config_mut().app.windows,
             std::env::var("TAURI_WEBVIEW_AUTOMATION").as_deref() == Ok("true"),
             std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").ok(),
-            std::env::var_os("WEBVIEW2_USER_DATA_FOLDER").map(PathBuf::from),
+            std::env::var_os("WEBVIEW2_USER_DATA_FOLDER").map(std::path::PathBuf::from),
         );
         context
     };
@@ -529,6 +544,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn photo(author: &str, source: &str) -> WallpaperView {
         WallpaperView {
@@ -584,6 +600,87 @@ mod tests {
         assert_eq!(
             tray_tooltip(&[photo("Ann", "Unsplash"), photo("Wallhaven", "Wallhaven")]),
             "Wallpaper Rotator\nPhoto by Ann on Unsplash and Wallhaven"
+        );
+    }
+
+    /// The folder `open_favorites_with` handed to the opener, if it got that far.
+    fn opened(paths: &Paths) -> (Result<(), String>, Option<PathBuf>) {
+        let mut seen = None;
+        let result = open_favorites_with(paths, |dir| {
+            seen = Some(dir.to_path_buf());
+            Ok(())
+        });
+        (result, seen)
+    }
+
+    #[test]
+    fn open_favorites_opens_the_folder_named_in_the_config() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = Paths::under(root.path());
+        let custom = root.path().join("Custom Favorites");
+        Config {
+            favorites_dir: Some(custom.clone()),
+            ..Config::default()
+        }
+        .save(&paths.config_file)
+        .unwrap();
+
+        assert_eq!(opened(&paths), (Ok(()), Some(custom.clone())));
+        assert!(custom.is_dir(), "created before the opener runs");
+    }
+
+    #[test]
+    fn open_favorites_creates_a_missing_default_folder_first() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = Paths::under(root.path());
+        Config::default().save(&paths.config_file).unwrap();
+        assert!(!paths.default_favorites_dir.exists());
+
+        let mut existed = false;
+        let result = open_favorites_with(&paths, |dir| {
+            existed = dir.is_dir();
+            Ok(())
+        });
+        assert_eq!(result, Ok(()));
+        assert!(existed, "the folder exists when the opener gets it");
+    }
+
+    #[test]
+    fn open_favorites_says_why_it_cannot_open() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = Paths::under(root.path());
+        let blocked = root.path().join("a file");
+        std::fs::write(&blocked, b"file").unwrap();
+        Config {
+            favorites_dir: Some(blocked.clone()),
+            ..Config::default()
+        }
+        .save(&paths.config_file)
+        .unwrap();
+
+        let (result, seen) = opened(&paths);
+        let message = result.unwrap_err();
+        assert!(
+            message.starts_with(&format!("could not create {}", blocked.display())),
+            "{message}"
+        );
+        assert_eq!(seen, None, "the opener is never called");
+
+        // An opener failure names the folder too.
+        let custom = root.path().join("ok");
+        Config {
+            favorites_dir: Some(custom.clone()),
+            ..Config::default()
+        }
+        .save(&paths.config_file)
+        .unwrap();
+        let result = open_favorites_with(&paths, |_| Err("no file manager".into()));
+        assert_eq!(
+            result,
+            Err(format!(
+                "could not open {}: no file manager",
+                custom.display()
+            ))
         );
     }
 }

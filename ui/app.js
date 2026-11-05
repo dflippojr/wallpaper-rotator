@@ -81,6 +81,9 @@ function render(s) {
   // Until there is a photo, the empty-state text says what's happening.
   $("btn-next").hidden = !w;
   $("btn-favorite").disabled = !w;
+  for (const id of ["btn-folder", "btn-folder-settings"]) {
+    $(id).title = s.favorites_dir ? `Open ${s.favorites_dir}` : "";
+  }
 
   const status = $("status");
   status.classList.toggle("error", Boolean(s.error));
@@ -179,6 +182,16 @@ async function saveSettings(event) {
   }
 }
 
+// The backend reads the folder from the saved config; the page only asks,
+// and shows why when the folder can't be opened.
+async function openFavorites(showError) {
+  try {
+    await invoke("open_favorites");
+  } catch (e) {
+    showError(String(e));
+  }
+}
+
 function openLink(event) {
   event.preventDefault();
   const url = event.currentTarget.dataset.url;
@@ -190,7 +203,15 @@ $("btn-next").addEventListener("click", () =>
   invoke("next_wallpaper", { index: snapshot && snapshot.current.length > 1 ? shown : null }),
 );
 $("btn-favorite").addEventListener("click", () => invoke("favorite", { index: shown }));
-$("btn-folder").addEventListener("click", () => invoke("open_favorites"));
+$("btn-folder").addEventListener("click", () =>
+  openFavorites((message) => {
+    $("status").classList.add("error");
+    $("status").textContent = message;
+  }),
+);
+$("btn-folder-settings").addEventListener("click", () =>
+  openFavorites((message) => ($("settings-error").textContent = message)),
+);
 $("btn-settings").addEventListener("click", () => ($("view-settings").hidden ? openSettings() : closeSettings()));
 $("btn-cancel").addEventListener("click", closeSettings);
 $("btn-quit").addEventListener("click", () => invoke("quit"));
@@ -217,9 +238,19 @@ document.addEventListener("keydown", (e) => {
 });
 
 listen("state", (e) => render(e.payload));
+// Every show (tray click, the menu's Show, a second launch) starts on the
+// wallpaper view, dropping unsaved Settings edits as Cancel does. Only while
+// no source can supply a photo does it open on Settings, keeping any edits.
+function showStartView() {
+  if (!snapshot.needs_setup) closeSettings();
+  else if ($("view-settings").hidden) openSettings();
+}
+
 listen("popover-shown", async () => {
+  // Switch before the round trip, so the window doesn't show Settings first.
+  if (snapshot) showStartView();
   render(await invoke("get_state"));
-  if (snapshot.needs_setup && $("view-settings").hidden) openSettings();
+  showStartView();
 });
 
 invoke("get_state").then((s) => {
