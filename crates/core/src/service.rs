@@ -1238,9 +1238,7 @@ fn ids<'a>(sets: impl IntoIterator<Item = &'a Set>) -> HashSet<String> {
 
 /// The size that covers every display: the widest width and tallest height.
 fn largest(displays: &[Display]) -> Option<(u32, u32)> {
-    let width = displays.iter().map(|d| d.width).max()?;
-    let height = displays.iter().map(|d| d.height).max()?;
-    (width > 0 && height > 0).then_some((width, height))
+    store::covering(displays)
 }
 
 /// How much of a display a photo covers without upscaling, up to 1.0.
