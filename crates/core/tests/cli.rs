@@ -328,8 +328,17 @@ fn displays_reports_the_platform_contract() {
                 .any(|l| l.contains(" (id ") && l.ends_with(')')),
             "{text}"
         );
+    } else if output.status.success() {
+        // Inside a GNOME session Mutter answers, and each display shows its
+        // scale (#80, AC3; owner decision on the issue).
+        assert!(output.stderr.is_empty(), "{output:?}");
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert!(
+            text.lines()
+                .any(|l| l.contains(", scale ") && l.contains(" (id ") && l.ends_with(')')),
+            "{text}"
+        );
     } else {
-        assert!(!output.status.success(), "{output:?}");
         let error = String::from_utf8(output.stderr).unwrap();
         assert!(error.contains("only from the tray app"), "{error}");
     }
