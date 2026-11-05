@@ -122,6 +122,7 @@ fn size_from_env() -> Option<Vec<Display>> {
         width: w.parse().ok()?,
         height: h.parse().ok()?,
         scale: 1.0,
+        layout_scale: None,
     }])
 }
 

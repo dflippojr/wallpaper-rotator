@@ -95,8 +95,8 @@ fn prop<'a, T: TryFrom<&'a OwnedValue>>(props: &'a Props, key: &str) -> Option<T
 
 /// One display per logical monitor (mirrored monitors share one): the
 /// current mode of its monitor, turned as the monitor is, positioned in
-/// GNOME's layout, with the scale from layout pixels to physical ones (the
-/// logical monitor's scale, or 1 in physical layout mode).
+/// GNOME's layout, at the logical monitor's scale (placed at 1 in physical
+/// layout mode).
 pub(crate) fn from_state((_, monitors, logical, props): &CurrentState) -> Vec<Display> {
     let physical_layout = prop::<u32>(props, "layout-mode") == Some(PHYSICAL_LAYOUT);
     logical
@@ -111,13 +111,10 @@ pub(crate) fn from_state((_, monitors, logical, props): &CurrentState) -> Vec<Di
             let (w, h) = (u32::try_from(*w).ok()?, u32::try_from(*h).ok()?);
             // Odd transforms turn the monitor a quarter.
             let (width, height) = if transform % 2 == 1 { (h, w) } else { (w, h) };
-            // In physical layout mode (X11) the layout itself is in
-            // physical pixels: positions and sizes ignore the scale, so as
-            // far as placing photos goes, every monitor is at scale 1.
-            let scale = if physical_layout || !(scale.is_finite() && *scale > 0.0) {
-                1.0
-            } else {
+            let scale = if scale.is_finite() && *scale > 0.0 {
                 *scale
+            } else {
+                1.0
             };
             let connector = spec.0.clone();
             let name = prop::<&str>(monitor_props, "display-name")
@@ -131,6 +128,9 @@ pub(crate) fn from_state((_, monitors, logical, props): &CurrentState) -> Vec<Di
                 width,
                 height,
                 scale,
+                // In physical layout mode (X11) positions and sizes are mode
+                // pixels whatever the scale, so photos are placed at 1.
+                layout_scale: physical_layout.then_some(1.0),
             })
         })
         .collect()
@@ -277,7 +277,7 @@ mod tests {
 
     /// Physical layout mode (X11): positions and sizes are mode pixels,
     /// whatever the scales say, so the layout is kept as it is and every
-    /// display is placed at scale 1.
+    /// display is placed at 1, while still carrying its own scale.
     #[test]
     fn physical_layout_keeps_mutters_physical_geometry() {
         let (serial, monitors, mut logical, props) = mixed_state(Some(PHYSICAL_LAYOUT));
@@ -288,17 +288,29 @@ mod tests {
         let displays = from_state(&(serial, monitors, logical, props));
         let got: Vec<_> = displays
             .iter()
-            .map(|d| (d.x, d.y, d.width, d.height, d.scale))
+            .map(|d| (d.x, d.y, d.width, d.height, d.scale, d.layout_scale()))
             .collect();
         assert_eq!(
             got,
             [
-                (0, 0, 3024, 1964, 1.0),
-                (3024, 0, 2560, 1440, 1.0),
-                (5584, 0, 1440, 2560, 1.0),
-                (0, 1964, 3840, 2160, 1.0),
+                (0, 0, 3024, 1964, 2.0, 1.0),
+                (3024, 0, 2560, 1440, 1.0, 1.0),
+                (5584, 0, 1440, 2560, 1.0, 1.0),
+                (0, 1964, 3840, 2160, 1.5, 1.0),
             ]
         );
+        assert_eq!(
+            displays[0].describe(),
+            "Built-in display: 3024x1964 pixels, scale 2"
+        );
+        // A scale change alone still changes the list, so the prefetched
+        // set no longer fits and the next rotation is sized again.
+        let (serial, monitors, mut logical2, props) = mixed_state(Some(PHYSICAL_LAYOUT));
+        logical2[1].0 = 3024;
+        logical2[2].0 = 5584;
+        logical2[3].1 = 1964;
+        logical2[0].2 = 1.0;
+        assert_ne!(from_state(&(serial, monitors, logical2, props)), displays);
     }
 
     /// Stitched in physical layout mode, the panel and the monitor beside

@@ -199,5 +199,6 @@ pub fn screen(id: &str, width: u32, height: u32) -> Display {
         width,
         height,
         scale: 1.0,
+        layout_scale: None,
     }
 }

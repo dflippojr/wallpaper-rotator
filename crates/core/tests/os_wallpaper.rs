@@ -263,6 +263,7 @@ fn spanned(run: &mut Run, dir: &Path, (w, h): (u32, u32)) -> Result<()> {
         width,
         height: h,
         scale: 1.0,
+        layout_scale: None,
     };
     let parts = vec![
         (

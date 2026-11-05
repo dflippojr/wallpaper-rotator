@@ -1302,6 +1302,7 @@ mod tests {
             width,
             height,
             scale: 1.0,
+            layout_scale: None,
         }
     }
 

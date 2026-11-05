@@ -43,6 +43,11 @@ pub struct Display {
     /// Windows' 150 %. Lists saved before it existed read as 1.
     #[serde(default = "unit_scale")]
     pub scale: f64,
+    /// Physical pixels per pixel of `x` and `y`'s layout, when that differs
+    /// from `scale`: GNOME's physical layout mode (X11) lays monitors out
+    /// in their own pixels whatever their scale, so it is 1 there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout_scale: Option<f64>,
 }
 
 fn unit_scale() -> f64 {
@@ -59,9 +64,18 @@ impl Display {
         }
     }
 
-    /// The display's size in the layout's logical pixels.
+    /// Physical pixels per layout pixel: `layout_scale`, else `scale`.
+    pub fn layout_scale(&self) -> f64 {
+        match self.layout_scale {
+            Some(s) if s.is_finite() && s > 0.0 => s,
+            _ => self.scale(),
+        }
+    }
+
+    /// The display's size in the layout's pixels (logical ones, except in
+    /// GNOME's physical layout mode).
     pub fn logical_size(&self) -> (f64, f64) {
-        let s = self.scale();
+        let s = self.layout_scale();
         (f64::from(self.width) / s, f64::from(self.height) / s)
     }
 
@@ -124,6 +138,7 @@ pub(crate) fn from_points(
         width: (width * scale).round() as u32,
         height: (height * scale).round() as u32,
         scale,
+        layout_scale: None,
     }
 }
 
@@ -169,6 +184,7 @@ pub fn toolkit_displays(monitors: &[Monitor]) -> Vec<Display> {
                 width: m.width,
                 height: m.height,
                 scale,
+                layout_scale: None,
             }
         })
         .collect()
@@ -375,6 +391,17 @@ mod tests {
         )
         .unwrap();
         assert_eq!(round_trip.scale, 2.0);
+        // A layout in physical pixels places the display by its own pixels.
+        let physical = Display {
+            layout_scale: Some(1.0),
+            ..round_trip.clone()
+        };
+        assert_eq!((physical.scale(), physical.layout_scale()), (2.0, 1.0));
+        assert_eq!(physical.logical_size(), (1920.0, 1080.0));
+        assert_eq!(round_trip.logical_size(), (960.0, 540.0));
+        assert!(!serde_json::to_string(&round_trip)
+            .unwrap()
+            .contains("layout_scale"));
         for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
             let d = Display {
                 scale: bad,

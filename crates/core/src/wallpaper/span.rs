@@ -22,7 +22,10 @@ pub(super) type Rect = (i64, i64, u32, u32);
 /// bigger rectangle (its photo is scaled up evenly, never stretched), which
 /// GNOME scales back down to that display's own pixels.
 pub(super) fn placements(displays: &[&Display]) -> Result<((u32, u32), Vec<Rect>)> {
-    let k = displays.iter().map(|d| d.scale()).fold(1.0, f64::max);
+    let k = displays
+        .iter()
+        .map(|d| d.layout_scale())
+        .fold(1.0, f64::max);
     let extent = |d: &&Display| {
         let (w, h) = d.logical_size();
         (
@@ -114,6 +117,7 @@ mod tests {
             width,
             height,
             scale: 1.0,
+            layout_scale: None,
         }
     }
 

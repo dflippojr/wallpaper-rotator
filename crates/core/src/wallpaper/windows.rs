@@ -105,6 +105,7 @@ fn displays_from(enumerate: impl FnOnce() -> Result<Vec<(String, RECT)>>) -> Res
                 width: (rect.right - rect.left) as u32,
                 height: (rect.bottom - rect.top) as u32,
                 scale: monitor_scale(&rect),
+                layout_scale: None,
             })
             .collect())
     })

@@ -383,6 +383,7 @@ mod tests {
             width,
             height: 1000,
             scale: 1.0,
+            layout_scale: None,
         }
     }
 
