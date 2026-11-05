@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use image::codecs::jpeg::JpegEncoder;
 use image::imageops::FilterType;
-use image::ImageReader;
+use image::{DynamicImage, ImageReader};
 use serde::{Deserialize, Serialize};
 
 use crate::net::{part_path, Http};
@@ -181,12 +181,27 @@ pub fn crop(src: &Path, width: u32, height: u32, dest: &Path, landscape_only: bo
     if landscape_only && photo.height() > photo.width() {
         bail!("skipped a portrait image");
     }
-    let photo = if (photo.width(), photo.height()) == (width, height) {
-        photo
+    fit_rgb8(photo, width, height, |rgb| write_jpeg(rgb, dest))
+}
+
+/// Hands `use_it` the photo as RGB8 at `width`x`height`: scaled to cover that
+/// size and cropped from the middle, unless it has that size already. An RGB8
+/// photo is moved, not copied. A resized original is freed before `use_it`
+/// runs, so the decoded image is not held while the result is used.
+pub(crate) fn fit_rgb8<T>(
+    photo: DynamicImage,
+    width: u32,
+    height: u32,
+    use_it: impl FnOnce(&image::RgbImage) -> T,
+) -> T {
+    let rgb = if (photo.width(), photo.height()) == (width, height) {
+        photo.into_rgb8()
     } else {
-        photo.resize_to_fill(width, height, FilterType::CatmullRom)
+        let fitted = photo.resize_to_fill(width, height, FilterType::CatmullRom);
+        drop(photo);
+        fitted.into_rgb8()
     };
-    write_jpeg(&photo.to_rgb8(), dest)
+    use_it(&rgb)
 }
 
 pub fn write_jpeg(img: &image::RgbImage, dest: &Path) -> Result<()> {
@@ -212,7 +227,8 @@ pub fn write_jpeg(img: &image::RgbImage, dest: &Path) -> Result<()> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use image::{Rgb, RgbImage};
+    use crate::alloc_probe::{large_allocations, live, unwatch, watch};
+    use image::{DynamicImage, GrayImage, ImageBuffer, Rgb, RgbImage, Rgba, RgbaImage};
 
     pub fn png(dir: &Path, name: &str, w: u32, h: u32) -> PathBuf {
         let file = dir.join(name);
@@ -294,5 +310,101 @@ pub(crate) mod tests {
         assert!(crop(&src, 160, 90, &dest, true).is_err());
         crop(&src, 160, 90, &dest, false).unwrap();
         assert_eq!(image::image_dimensions(&dest).unwrap(), (160, 90));
+    }
+
+    /// Pixels that vary, so the PNG stays small while the decoded image is
+    /// full size.
+    fn gradient(dir: &Path, name: &str, w: u32, h: u32) -> PathBuf {
+        let file = dir.join(name);
+        RgbImage::from_fn(w, h, |x, y| Rgb([x as u8, y as u8, (x ^ y) as u8]))
+            .save(&file)
+            .unwrap();
+        file
+    }
+
+    /// The crop as it was written before `into_rgb8`: every image that is not
+    /// already RGB8 was copied with `to_rgb8`. Same pixels, same JPEG bytes.
+    fn previous_crop(src: &Path, width: u32, height: u32, dest: &Path) {
+        let photo = image::open(src).unwrap();
+        let photo = if (photo.width(), photo.height()) == (width, height) {
+            photo
+        } else {
+            photo.resize_to_fill(width, height, FilterType::CatmullRom)
+        };
+        write_jpeg(&photo.to_rgb8(), dest).unwrap();
+    }
+
+    #[test]
+    fn crop_output_is_byte_identical_to_the_previous_pipeline() {
+        let dir = tempfile::tempdir().unwrap();
+        let rgba = RgbaImage::from_fn(320, 240, |x, y| {
+            Rgba([x as u8, y as u8, 90, (x % 255) as u8])
+        });
+        let gray = GrayImage::from_fn(160, 90, |x, y| image::Luma([(x + y) as u8]));
+        let rgb16: ImageBuffer<image::Rgb<u16>, Vec<u16>> =
+            ImageBuffer::from_fn(320, 180, |x, y| {
+                image::Rgb([(x * 200) as u16, (y * 300) as u16, 4000])
+            });
+        let rgba_file = dir.path().join("rgba.png");
+        DynamicImage::ImageRgba8(rgba).save(&rgba_file).unwrap();
+        let gray_file = dir.path().join("gray.png");
+        DynamicImage::ImageLuma8(gray).save(&gray_file).unwrap();
+        let rgb16_file = dir.path().join("rgb16.png");
+        DynamicImage::ImageRgb16(rgb16).save(&rgb16_file).unwrap();
+        let cases = [
+            ("rgb8 at size", png(dir.path(), "same.png", 160, 90)),
+            ("rgb8 scaled", gradient(dir.path(), "big.png", 640, 400)),
+            ("rgba scaled", rgba_file),
+            ("gray at size", gray_file),
+            ("rgb16 scaled", rgb16_file),
+        ];
+        for (name, src) in cases {
+            let new = dir.path().join("new.jpg");
+            let old = dir.path().join("old.jpg");
+            crop(&src, 160, 90, &new, false).unwrap();
+            previous_crop(&src, 160, 90, &old);
+            assert_eq!(fs::read(&new).unwrap(), fs::read(&old).unwrap(), "{name}");
+        }
+    }
+
+    #[test]
+    fn crop_of_an_rgb8_original_makes_no_copy_of_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (w, h) = (640, 400);
+        let src = gradient(dir.path(), "same.png", w, h);
+        let dest = dir.path().join("out.jpg");
+        // Already the requested size, so nothing is resized: the decoded
+        // original is the only full-size buffer, and a copy would be a second.
+        let full = w as usize * h as usize * 3;
+        let (result, full_size_buffers) =
+            large_allocations(full, || crop(&src, w, h, &dest, false));
+        result.unwrap();
+        assert_eq!(full_size_buffers, 1, "full-size buffers made by crop");
+    }
+
+    #[test]
+    fn an_rgb8_photo_is_used_in_place() {
+        let (w, h) = (160, 90);
+        watch(w as usize * h as usize * 3);
+        let photo =
+            DynamicImage::ImageRgb8(RgbImage::from_fn(w, h, |x, y| Rgb([x as u8, y as u8, 7])));
+        let mut live_while_used = 0;
+        fit_rgb8(photo, w, h, |_| live_while_used = live());
+        unwatch();
+        // Moved, not copied: the photo's buffer is the only one alive.
+        assert_eq!(live_while_used, 1);
+    }
+
+    #[test]
+    fn a_resized_photo_is_freed_before_it_is_used() {
+        let (w, h) = (640, 400);
+        watch(w as usize * h as usize * 3);
+        let photo =
+            DynamicImage::ImageRgb8(RgbImage::from_fn(w, h, |x, y| Rgb([x as u8, y as u8, 7])));
+        let mut live_while_used = 0;
+        fit_rgb8(photo, 160, 90, |_| live_while_used = live());
+        unwatch();
+        // The decoded original is gone by the time the resized image is used.
+        assert_eq!(live_while_used, 0);
     }
 }

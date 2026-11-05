@@ -4,10 +4,11 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
-use image::imageops::{self, FilterType};
+use image::imageops;
 use image::RgbImage;
 
 use super::Display;
+use crate::source::fit_rgb8;
 
 /// Refuse layouts bigger than this many pixels (about 1.5 GB of RGB).
 const MAX_PIXELS: u64 = 500_000_000;
@@ -32,17 +33,14 @@ pub fn compose(parts: &[(Display, PathBuf)], dest: &Path) -> Result<()> {
             image::open(file).with_context(|| format!("could not read {}", file.display()))?;
         // Photos are downloaded at the display's size; resize only if the
         // layout changed since.
-        let photo = if (photo.width(), photo.height()) == (display.width, display.height) {
-            photo
-        } else {
-            photo.resize_to_fill(display.width, display.height, FilterType::CatmullRom)
-        };
-        imageops::replace(
-            &mut canvas,
-            &photo.to_rgb8(),
-            i64::from(display.x - left),
-            i64::from(display.y - top),
-        );
+        fit_rgb8(photo, display.width, display.height, |rgb| {
+            imageops::replace(
+                &mut canvas,
+                rgb,
+                i64::from(display.x - left),
+                i64::from(display.y - top),
+            );
+        });
     }
 
     crate::source::write_jpeg(&canvas, dest).context("could not write the stitched wallpaper")
@@ -51,7 +49,11 @@ pub fn compose(parts: &[(Display, PathBuf)], dest: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use image::Rgb;
+    use crate::alloc_probe::large_allocations;
+    use crate::source::write_jpeg;
+    use image::imageops::FilterType;
+    use image::{imageops, DynamicImage, Rgb, Rgba, RgbaImage};
+    use std::fs;
 
     fn photo(dir: &Path, name: &str, w: u32, h: u32, color: [u8; 3]) -> PathBuf {
         let file = dir.join(name);
@@ -101,5 +103,67 @@ mod tests {
         assert!(near(*out.get_pixel(50, 25), [0, 0, 0]));
         assert!(!dir.path().join("span.jpg.part").exists());
         assert!(compose(&[], &dir.path().join("x.jpg")).is_err());
+    }
+
+    #[test]
+    fn stitched_output_is_byte_identical_to_the_previous_pipeline() {
+        let dir = tempfile::tempdir().unwrap();
+        let alpha = RgbaImage::from_fn(40, 30, |x, y| Rgba([200, (x * 5) as u8, y as u8, 255]));
+        let alpha_file = dir.path().join("alpha.png");
+        DynamicImage::ImageRgba8(alpha).save(&alpha_file).unwrap();
+        let parts = vec![
+            (display("left", 0, 0, 40, 30), alpha_file),
+            // Downloaded for a different size: resized before it is placed.
+            (
+                display("right", 40, 0, 20, 10),
+                photo(dir.path(), "r.png", 64, 64, [20, 20, 200]),
+            ),
+        ];
+        let dest = dir.path().join("span.jpg");
+        compose(&parts, &dest).unwrap();
+
+        // The same stitch, built the way it was before `into_rgb8`.
+        let mut canvas = RgbImage::new(60, 30);
+        let left = image::open(&parts[0].1).unwrap();
+        imageops::replace(&mut canvas, &left.to_rgb8(), 0, 0);
+        let right =
+            image::open(&parts[1].1)
+                .unwrap()
+                .resize_to_fill(20, 10, FilterType::CatmullRom);
+        imageops::replace(&mut canvas, &right.to_rgb8(), 40, 0);
+        let expected = dir.path().join("expected.jpg");
+        write_jpeg(&canvas, &expected).unwrap();
+        assert_eq!(fs::read(&dest).unwrap(), fs::read(&expected).unwrap());
+    }
+
+    #[test]
+    fn stitching_copies_no_photo() {
+        let dir = tempfile::tempdir().unwrap();
+        let parts = vec![
+            (
+                display("left", 0, 0, 320, 200),
+                photo(dir.path(), "l.png", 320, 200, [200, 20, 20]),
+            ),
+            (
+                display("right", 320, 0, 320, 200),
+                photo(dir.path(), "r.png", 320, 200, [20, 20, 200]),
+            ),
+        ];
+        let dest = dir.path().join("span.jpg");
+        // Both photos are already their display's size. The decoder makes its
+        // own buffers, so measure what decoding each photo alone makes and
+        // expect compose to add only the canvas on top of that.
+        let photo_bytes = 320 * 200 * 3;
+        let decoding: usize = parts
+            .iter()
+            .map(|(_, file)| large_allocations(photo_bytes, || image::open(file).unwrap()).1)
+            .sum();
+        let (result, large) = large_allocations(photo_bytes, || compose(&parts, &dest));
+        result.unwrap();
+        assert_eq!(
+            large,
+            decoding + 1,
+            "full-size buffers made by compose (decoding each photo, plus the canvas)"
+        );
     }
 }
