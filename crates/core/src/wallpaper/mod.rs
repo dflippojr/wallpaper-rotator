@@ -66,6 +66,47 @@ impl Layout {
     }
 }
 
+/// A monitor as the windowing toolkit reports it (GTK, on GNOME): position
+/// and size in physical pixels, and its scale factor.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Monitor {
+    pub name: Option<String>,
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub scale: f64,
+}
+
+/// GNOME: the displays for the toolkit's monitors. GNOME's spanned
+/// wallpaper stretches across the layout in logical pixels, so positions
+/// are logical, scaled up by the highest scale factor to keep HiDPI screens
+/// sharp.
+pub fn toolkit_displays(monitors: &[Monitor]) -> Vec<Display> {
+    let k = monitors.iter().map(|m| m.scale).fold(1.0, f64::max);
+    monitors
+        .iter()
+        .enumerate()
+        .map(|(i, m)| {
+            let s = m.scale.max(0.1);
+            let px = |v: f64| (v / s * k).round();
+            let (x, y) = (px(f64::from(m.x)), px(f64::from(m.y)));
+            let name = m
+                .name
+                .clone()
+                .unwrap_or_else(|| format!("Display {}", i + 1));
+            Display {
+                id: format!("{name}@{x},{y}"),
+                name,
+                x: x as i32,
+                y: y as i32,
+                width: px(f64::from(m.width)) as u32,
+                height: px(f64::from(m.height)) as u32,
+            }
+        })
+        .collect()
+}
+
 /// The connected displays, where the platform can list them itself. GNOME
 /// returns `None`; the app reads monitors from the windowing toolkit there.
 pub fn displays() -> Option<Vec<Display>> {

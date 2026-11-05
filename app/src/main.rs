@@ -14,7 +14,7 @@ use rotator_core::log;
 use rotator_core::paths::Paths;
 use rotator_core::service::{Command, Hooks, Service, Settings, Snapshot, WallpaperView};
 use rotator_core::source::SourceId;
-use rotator_core::wallpaper::{self, Display, Layout};
+use rotator_core::wallpaper::{self, Display, Layout, Monitor};
 use tauri::image::Image;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -72,36 +72,22 @@ fn displays(app: &AppHandle) -> Vec<Display> {
     native.unwrap_or_else(|| toolkit_displays(app))
 }
 
-/// Monitors as GTK sees them. GNOME's spanned wallpaper stretches across
-/// the layout in logical pixels, so positions are logical, scaled up by the
-/// highest scale factor to keep HiDPI screens sharp.
+/// Monitors as GTK sees them (GNOME).
 fn toolkit_displays(app: &AppHandle) -> Vec<Display> {
-    let monitors = app.available_monitors().unwrap_or_default();
-    let k = monitors
+    let monitors: Vec<Monitor> = app
+        .available_monitors()
+        .unwrap_or_default()
         .iter()
-        .map(|m| m.scale_factor())
-        .fold(1.0, f64::max);
-    monitors
-        .iter()
-        .enumerate()
-        .map(|(i, m)| {
-            let s = m.scale_factor().max(0.1);
-            let px = |v: f64| (v / s * k).round();
-            let (x, y) = (px(m.position().x as f64), px(m.position().y as f64));
-            let name = m
-                .name()
-                .cloned()
-                .unwrap_or_else(|| format!("Display {}", i + 1));
-            Display {
-                id: format!("{name}@{x},{y}"),
-                name,
-                x: x as i32,
-                y: y as i32,
-                width: px(m.size().width as f64) as u32,
-                height: px(m.size().height as f64) as u32,
-            }
+        .map(|m| Monitor {
+            name: m.name().cloned(),
+            x: m.position().x,
+            y: m.position().y,
+            width: m.size().width,
+            height: m.size().height,
+            scale: m.scale_factor(),
         })
-        .collect()
+        .collect();
+    wallpaper::toolkit_displays(&monitors)
 }
 
 // ---- Commands the popover calls ----
