@@ -43,6 +43,34 @@ fn first_run_without_a_key_opens_setup() {
     assert!(w.api.requests().is_empty(), "{:?}", w.api.requests());
 }
 
+/// The popover opens on Settings only while `needs_setup` holds (#82), so
+/// it must clear once a saved source can supply a photo.
+#[test]
+fn setup_is_no_longer_needed_once_a_source_can_supply_a_photo() {
+    let mut w = World::new(
+        Config {
+            access_key: String::new(),
+            sources: vec![SourceId::Unsplash],
+            ..Config::default()
+        },
+        vec![screen("1", 160, 90)],
+    );
+    assert!(w.run(Command::Tick).needs_setup);
+
+    // What the Settings screen saves: a keyless source ticked too.
+    let mut saved = Config::load_or_create(&w.paths.config_file).unwrap();
+    saved.sources = vec![SourceId::Unsplash, SourceId::Wallhaven];
+    saved.save(&w.paths.config_file).unwrap();
+    assert!(!w.run(Command::Reload).needs_setup, "a keyless source");
+
+    // An Unsplash key alone also ends setup.
+    let mut saved = Config::load_or_create(&w.paths.config_file).unwrap();
+    saved.sources = vec![SourceId::Unsplash];
+    saved.access_key = UNSPLASH_KEY.into();
+    saved.save(&w.paths.config_file).unwrap();
+    assert!(!w.run(Command::Reload).needs_setup, "an Unsplash key");
+}
+
 #[test]
 fn rotate_then_next_uses_the_prefetched_photo() {
     let mut w = World::new(config(&[SourceId::Unsplash]), vec![screen("1", 160, 90)]);

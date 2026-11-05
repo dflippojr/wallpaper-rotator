@@ -40,13 +40,28 @@ setter. Keep every automated CLI rotation in dry-run mode.
 
 ### 2. Check the wallpaper on the real OS
 
-Unit tests don't prove a photo ends up on the desktop. The real-OS check (set the wallpaper, then read it back from the OS) is tracked in #14 and doesn't exist yet. Until it does, a change to `crates/core/src/wallpaper/` or to rotation needs a manual run on each affected OS:
+Unit tests don't prove a photo ends up on the desktop. The OS harness in `crates/core/tests/os_wallpaper.rs` does: it sets a pure red photo with the app's own setter, reads it back from the OS (not from the app), does the same with blue, then puts the original wallpaper back. Its read-back helpers are in `crates/core/tests/common/os_wallpaper.rs`. CI runs it as the `os-wallpaper` job on `ubuntu-24.04`, `macos-latest` and `windows-latest`.
+
+To run it yourself, on a desktop you can change (it sets the wallpaper and restores it afterwards):
+
+```sh
+ROTATOR_OS_TESTS=1 cargo test -p rotator-core --test os_wallpaper
+```
+
+Without `ROTATOR_OS_TESTS=1` it skips itself. On Linux, run it through `scripts/os-wallpaper-gnome.sh`, which runs the command against a headless GNOME Shell: `ROTATOR_OS_TESTS=1 scripts/os-wallpaper-gnome.sh cargo test -p rotator-core --test os_wallpaper`. Set `ROTATOR_OS_TESTS_SCREENSHOT=1` to also check the colour on screen. That needs a desktop with nothing in front of the wallpaper, so a developer run skips that check and says so.
+
+The harness does not cover:
+
+- Rotation. It calls the platform setter directly, so choosing a photo, the state and the cache are not checked there. The CLI journeys in `crates/core/tests/cli.rs` cover those in dry-run mode.
+- The tray app's UI on macOS. The real-app journey (`app/tests/e2e`) drives the app with `tauri-driver` on `ubuntu-24.04` and `windows-latest` only, and `tauri-driver` does not support macOS.
+
+Because the harness doesn't cover rotation, a change to `crates/core/src/wallpaper/` or to rotation also needs a manual run on each affected OS, then a read-back from the OS, not from the app:
 
 ```sh
 cargo run -p rotator-core --bin wallpaper-rotator-cli -- rotate
 ```
 
-Then read the wallpaper back from the OS, not from the app. Don't run `rotate` while the tray app is running.
+Don't run `rotate` while the tray app is running.
 
 ### 3. Reach the Mac
 
@@ -78,7 +93,7 @@ What you did not check, and why.
 Tests deleted or skipped, or config loosened, with the reason. Empty if none.
 ```
 
-**Never claim an OS was verified unless you ran it there.** CI passing on `macos-latest` proves it compiles and the unit tests pass. It doesn't prove the wallpaper changed on a Mac.
+**Never claim an OS was verified unless you ran it there.** A green `os-wallpaper` job on `macos-latest` is CI evidence from a GitHub runner: it shows the harness set and read back the wallpaper on that runner. It doesn't prove the wallpaper changed on a Mac you use, and it doesn't drive the tray app there.
 
 After you push fix commits to a PR, re-run the automated review on its head: `gh workflow run review.yml -f pr_number=<PR> -f mode=full`.
 
