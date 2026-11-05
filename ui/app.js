@@ -81,6 +81,9 @@ function render(s) {
   // Until there is a photo, the empty-state text says what's happening.
   $("btn-next").hidden = !w;
   $("btn-favorite").disabled = !w;
+  for (const id of ["btn-folder", "btn-folder-settings"]) {
+    $(id).title = s.favorites_dir ? `Open ${s.favorites_dir}` : "";
+  }
 
   const status = $("status");
   status.classList.toggle("error", Boolean(s.error));
@@ -179,6 +182,16 @@ async function saveSettings(event) {
   }
 }
 
+// The backend reads the folder from the saved config; the page only asks,
+// and shows why when the folder can't be opened.
+async function openFavorites(showError) {
+  try {
+    await invoke("open_favorites");
+  } catch (e) {
+    showError(String(e));
+  }
+}
+
 function openLink(event) {
   event.preventDefault();
   const url = event.currentTarget.dataset.url;
@@ -190,7 +203,15 @@ $("btn-next").addEventListener("click", () =>
   invoke("next_wallpaper", { index: snapshot && snapshot.current.length > 1 ? shown : null }),
 );
 $("btn-favorite").addEventListener("click", () => invoke("favorite", { index: shown }));
-$("btn-folder").addEventListener("click", () => invoke("open_favorites"));
+$("btn-folder").addEventListener("click", () =>
+  openFavorites((message) => {
+    $("status").classList.add("error");
+    $("status").textContent = message;
+  }),
+);
+$("btn-folder-settings").addEventListener("click", () =>
+  openFavorites((message) => ($("settings-error").textContent = message)),
+);
 $("btn-settings").addEventListener("click", () => ($("view-settings").hidden ? openSettings() : closeSettings()));
 $("btn-cancel").addEventListener("click", closeSettings);
 $("btn-quit").addEventListener("click", () => invoke("quit"));
