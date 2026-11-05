@@ -203,4 +203,4 @@ footer a.plain { pointer-events: none; font-weight: 400; color: var(--muted); }
 .actions .primary { background: var(--accent); }
 .link { display: block; margin: 6px auto 0; background: none; border: 0; color: var(--muted); font-size: 12px; }
 .link:hover { color: var(--text); text-decoration: underline; }
-.sources .link { margin: 0; padding: 0; justify-self: start; align-self: center; text-align: left; }
+.sources .link { margin: 0; padding: 0; justify-self: start; align-self: center; text-align: left; text-decoration: underline; }
