@@ -13,33 +13,80 @@ use crate::source::fit_rgb8;
 /// Refuse layouts bigger than this many pixels (about 1.5 GB of RGB).
 const MAX_PIXELS: u64 = 500_000_000;
 
-pub fn compose(parts: &[(Display, PathBuf)], dest: &Path) -> Result<()> {
-    let displays = || parts.iter().map(|(d, _)| d);
-    let left = displays()
-        .map(|d| d.x)
-        .min()
+/// A display's place on the canvas: left, top, width, height.
+pub(super) type Rect = (i64, i64, u32, u32);
+
+/// Where each display goes on the stitched canvas: GNOME's logical layout
+/// times the highest scale factor, so the sharpest display keeps every
+/// pixel of its photo. A display with a lower scale gets a proportionally
+/// bigger rectangle (its photo is scaled up evenly, never stretched), which
+/// GNOME scales back down to that display's own pixels.
+pub(super) fn placements(displays: &[&Display]) -> Result<((u32, u32), Vec<Rect>)> {
+    let k = displays
+        .iter()
+        .map(|d| d.layout_scale())
+        .fold(1.0, f64::max);
+    let extent = |d: &&Display| {
+        let (w, h) = d.logical_size();
+        (
+            f64::from(d.x),
+            f64::from(d.y),
+            f64::from(d.x) + w,
+            f64::from(d.y) + h,
+        )
+    };
+    let left = displays
+        .iter()
+        .map(|d| extent(d).0)
+        .reduce(f64::min)
         .context("no displays to stitch")?;
-    let top = displays().map(|d| d.y).min().unwrap_or(0);
-    let right = displays().map(|d| d.x + d.width as i32).max().unwrap_or(0);
-    let bottom = displays().map(|d| d.y + d.height as i32).max().unwrap_or(0);
-    let (width, height) = ((right - left) as u32, (bottom - top) as u32);
-    if width == 0 || height == 0 || u64::from(width) * u64::from(height) > MAX_PIXELS {
+    let top = displays
+        .iter()
+        .map(|d| extent(d).1)
+        .fold(f64::MAX, f64::min);
+    let right = displays
+        .iter()
+        .map(|d| extent(d).2)
+        .fold(f64::MIN, f64::max);
+    let bottom = displays
+        .iter()
+        .map(|d| extent(d).3)
+        .fold(f64::MIN, f64::max);
+    // Edges are rounded, not sizes, so touching displays still touch.
+    let px = |v: f64, origin: f64| ((v - origin) * k).round();
+    let (width, height) = (px(right, left), px(bottom, top));
+    if width < 1.0 || height < 1.0 || width * height > MAX_PIXELS as f64 {
         bail!("monitor layout of {width}x{height} is too large to stitch");
     }
+    let rects = displays
+        .iter()
+        .map(|d| {
+            let (l, t, r, b) = extent(d);
+            let (x, y) = (px(l, left), px(t, top));
+            (
+                x as i64,
+                y as i64,
+                (px(r, left) - x).max(1.0) as u32,
+                (px(b, top) - y).max(1.0) as u32,
+            )
+        })
+        .collect();
+    Ok(((width as u32, height as u32), rects))
+}
+
+pub fn compose(parts: &[(Display, PathBuf)], dest: &Path) -> Result<()> {
+    let displays: Vec<&Display> = parts.iter().map(|(d, _)| d).collect();
+    let ((width, height), rects) = placements(&displays)?;
 
     let mut canvas = RgbImage::new(width, height);
-    for (display, file) in parts {
+    for ((_, file), (x, y, w, h)) in parts.iter().zip(rects) {
         let photo =
             image::open(file).with_context(|| format!("could not read {}", file.display()))?;
-        // Photos are downloaded at the display's size; resize only if the
-        // layout changed since.
-        fit_rgb8(photo, display.width, display.height, |rgb| {
-            imageops::replace(
-                &mut canvas,
-                rgb,
-                i64::from(display.x - left),
-                i64::from(display.y - top),
-            );
+        // Photos are downloaded at the display's physical size, which is
+        // its rectangle here unless the layout changed since or another
+        // display is sharper.
+        fit_rgb8(photo, w, h, |rgb| {
+            imageops::replace(&mut canvas, rgb, x, y);
         });
     }
 
@@ -69,6 +116,8 @@ mod tests {
             y,
             width,
             height,
+            scale: 1.0,
+            layout_scale: None,
         }
     }
 
@@ -103,6 +152,83 @@ mod tests {
         assert!(near(*out.get_pixel(50, 25), [0, 0, 0]));
         assert!(!dir.path().join("span.jpg.part").exists());
         assert!(compose(&[], &dir.path().join("x.jpg")).is_err());
+    }
+
+    fn scaled(display: Display, scale: f64) -> Display {
+        Display { scale, ..display }
+    }
+
+    /// The issue's layout: a 3024x1964 panel at scale 2, a 2560x1440
+    /// monitor at scale 1 to its right and a 1440x2560 portrait one after
+    /// that, at GNOME's logical positions.
+    #[test]
+    fn mixed_scales_are_placed_at_the_sharpest_scale_without_stretching() {
+        let displays = [
+            scaled(display("built-in", 0, 0, 3024, 1964), 2.0),
+            display("external", 1512, 0, 2560, 1440),
+            display("portrait", 4072, 0, 1440, 2560),
+        ];
+        let refs: Vec<&Display> = displays.iter().collect();
+        let (canvas, rects) = placements(&refs).unwrap();
+        // The logical layout is 5512x1280; the canvas is twice that.
+        assert_eq!(canvas, (11024, 5120));
+        assert_eq!(
+            rects,
+            [
+                // The panel's photo goes in pixel for pixel.
+                (0, 0, 3024, 1964),
+                // The others are scaled up evenly, keeping their shape, and
+                // GNOME scales them back down to their own pixels.
+                (3024, 0, 5120, 2880),
+                (8144, 0, 2880, 5120),
+            ]
+        );
+        for (d, (_, _, w, h)) in displays.iter().zip(&rects) {
+            let photo = f64::from(d.width) / f64::from(d.height);
+            let placed = f64::from(*w) / f64::from(*h);
+            assert!((photo - placed).abs() < 1e-3, "{} is stretched", d.id);
+        }
+    }
+
+    #[test]
+    fn touching_displays_at_a_fractional_scale_leave_no_gap() {
+        // 1.25: 1601 pixels are 1280.8 logical ones, so sizes don't round
+        // evenly; edges do.
+        let displays = [
+            scaled(display("a", 0, 0, 1601, 901), 1.25),
+            display("b", 1281, 0, 1000, 700),
+        ];
+        let refs: Vec<&Display> = displays.iter().collect();
+        let (canvas, rects) = placements(&refs).unwrap();
+        let (ax, _, aw, _) = rects[0];
+        let (bx, _, bw, _) = rects[1];
+        assert_eq!(ax, 0);
+        assert_eq!(bx, ax + i64::from(aw), "they must touch: {rects:?}");
+        assert_eq!(i64::from(canvas.0), bx + i64::from(bw));
+        assert!(placements(&[]).is_err());
+    }
+
+    #[test]
+    fn a_mixed_scale_stitch_shows_each_photo_in_its_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let parts = vec![
+            (
+                scaled(display("retina", 0, 0, 40, 20), 2.0),
+                photo(dir.path(), "r.png", 40, 20, [200, 20, 20]),
+            ),
+            (
+                display("external", 20, 0, 30, 15),
+                photo(dir.path(), "e.png", 30, 15, [20, 20, 200]),
+            ),
+        ];
+        let dest = dir.path().join("span.jpg");
+        compose(&parts, &dest).unwrap();
+        let out = image::open(&dest).unwrap().to_rgb8();
+        assert_eq!(out.dimensions(), (100, 30));
+        assert!(near(*out.get_pixel(20, 10), [200, 20, 20]));
+        assert!(near(*out.get_pixel(70, 25), [20, 20, 200]));
+        // Below the panel stays black.
+        assert!(near(*out.get_pixel(20, 26), [0, 0, 0]));
     }
 
     #[test]

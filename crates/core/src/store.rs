@@ -80,9 +80,20 @@ impl Set {
     /// Whether this set was chosen for these displays: one shared photo when
     /// `each` is off, or exactly one photo per display (same size and place)
     /// when it is on.
+    ///
+    /// Photos are saved at exactly the size they were fetched for, so a
+    /// shared photo whose pixels differ from [`covering`] these displays was
+    /// fetched before a resolution change. One that can't be read is kept;
+    /// applying it reports the problem.
     pub fn fits(&self, displays: &[Display], each: bool) -> bool {
         if !each {
-            return matches!(self.photos.as_slice(), [only] if only.display.is_none());
+            let [only] = self.photos.as_slice() else {
+                return false;
+            };
+            return only.display.is_none()
+                && covering(displays).is_none_or(|size| {
+                    image::image_dimensions(&only.file).map_or(true, |found| found == size)
+                });
         }
         let mut ours: Vec<&Display> = self
             .photos
@@ -94,6 +105,14 @@ impl Set {
         live.sort_by(|a, b| a.id.cmp(&b.id));
         ours.len() == self.photos.len() && ours == live
     }
+}
+
+/// The size one shared photo is fetched at: the widest width and the
+/// tallest height of any display.
+pub fn covering(displays: &[Display]) -> Option<(u32, u32)> {
+    let width = displays.iter().map(|d| d.width).max()?;
+    let height = displays.iter().map(|d| d.height).max()?;
+    (width > 0 && height > 0).then_some((width, height))
 }
 
 /// What the app remembers between runs.
@@ -382,7 +401,29 @@ mod tests {
             y: 0,
             width,
             height: 1000,
+            scale: 1.0,
+            layout_scale: None,
         }
+    }
+
+    #[test]
+    fn a_shared_photo_fits_only_the_size_it_was_fetched_for() {
+        let dir = tempfile::tempdir().unwrap();
+        let photo = wallpaper(dir.path(), "s", 0);
+        image::RgbImage::new(3000, 1000)
+            .save_with_format(&photo.file, image::ImageFormat::Jpeg)
+            .unwrap();
+        let shared = Set::single(photo);
+        let live = [display("1", 2000), display("2", 3000)];
+        assert_eq!(covering(&live), Some((3000, 1000)));
+        assert!(shared.fits(&live, false));
+        assert!(shared.fits(&[], false), "no displays: nothing to compare");
+        assert!(
+            !shared.fits(&[display("1", 2560)], false),
+            "after a resolution change"
+        );
+        assert!(!shared.fits(&live, true));
+        assert_eq!(covering(&[display("0", 0)]), None);
     }
 
     #[test]

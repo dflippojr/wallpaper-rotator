@@ -514,10 +514,12 @@ impl Service {
     }
 
     /// Asks the platform for the displays, keeping the last known list if
-    /// it can't say.
+    /// it can't say. Logs each new list with every display's size and scale.
     fn live_displays(&mut self) -> Vec<Display> {
         let live = (self.hooks.displays)();
-        if !live.is_empty() {
+        if !live.is_empty() && live != self.displays {
+            let list: Vec<String> = live.iter().map(Display::describe).collect();
+            self.log(&format!("displays: {}", list.join("; ")));
             self.displays = live;
         }
         self.displays.clone()
@@ -1236,9 +1238,7 @@ fn ids<'a>(sets: impl IntoIterator<Item = &'a Set>) -> HashSet<String> {
 
 /// The size that covers every display: the widest width and tallest height.
 fn largest(displays: &[Display]) -> Option<(u32, u32)> {
-    let width = displays.iter().map(|d| d.width).max()?;
-    let height = displays.iter().map(|d| d.height).max()?;
-    (width > 0 && height > 0).then_some((width, height))
+    store::covering(displays)
 }
 
 /// How much of a display a photo covers without upscaling, up to 1.0.
@@ -1315,6 +1315,8 @@ mod tests {
             y: 0,
             width,
             height,
+            scale: 1.0,
+            layout_scale: None,
         }
     }
 
