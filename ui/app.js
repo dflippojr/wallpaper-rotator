@@ -217,9 +217,19 @@ document.addEventListener("keydown", (e) => {
 });
 
 listen("state", (e) => render(e.payload));
+// Every show (tray click, the menu's Show, a second launch) starts on the
+// wallpaper view, dropping unsaved Settings edits as Cancel does. Only while
+// no source can supply a photo does it open on Settings, keeping any edits.
+function showStartView() {
+  if (!snapshot.needs_setup) closeSettings();
+  else if ($("view-settings").hidden) openSettings();
+}
+
 listen("popover-shown", async () => {
+  // Switch before the round trip, so the window doesn't show Settings first.
+  if (snapshot) showStartView();
   render(await invoke("get_state"));
-  if (snapshot.needs_setup && $("view-settings").hidden) openSettings();
+  showStartView();
 });
 
 invoke("get_state").then((s) => {

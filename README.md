@@ -16,7 +16,11 @@ Other rotators save every photo they cycle through. This one keeps only the wall
 
 ## Setup
 
-Tick the photo sources you want in Settings (it opens on first run). Wallhaven, Photo of the day and My favorites work without a key. For the others:
+Tick the photo sources you want in Settings (it opens on first run). Wallhaven, Photo of the day and My favorites work without a key.
+
+Settings opens on its own only while none of the ticked sources can supply a photo (an Unsplash or Pexels source with no key). During setup it reopens on Settings with your unsaved changes kept. Otherwise the popover always opens on the wallpaper, from the tray icon or the menu's **Show**, and Settings changes you didn't save are dropped, as Cancel does.
+
+For the sources that need a key:
 
 - **Unsplash:** create a free app at <https://unsplash.com/developers> and paste its **Access Key**, or set `UNSPLASH_ACCESS_KEY`. Demo keys allow 50 requests an hour; Unsplash raises that to 5,000 for free once you apply for production access on the app's page.
 - **Pexels:** get a free key at <https://www.pexels.com/api/> and paste it, or set `PEXELS_API_KEY`. About 200 requests an hour.
