@@ -1374,6 +1374,50 @@ fn a_resolution_or_scale_change_re_sizes_the_next_rotation() {
 }
 
 #[test]
+fn a_resolution_change_re_sizes_the_next_shared_photo() {
+    // One monitor with per-display on, and per-display off, both use one
+    // shared photo; a photo prefetched before the change must not be used.
+    for per_display in [true, false] {
+        let mut w = World::new(
+            Config {
+                per_display,
+                ..config(&[SourceId::Favorites])
+            },
+            vec![mixed_layout().remove(1)],
+        );
+        w.add_favorites(&["a.png", "b.png", "c.png", "d.png"]);
+        assert_eq!(w.run(Command::Next(None)).error, None);
+        let next = w.state().next.expect("a photo is prefetched");
+        assert_eq!(
+            image::image_dimensions(&next.photos[0].file).unwrap(),
+            (256, 144)
+        );
+
+        let mut changed = mixed_layout().remove(1);
+        changed.width = 320;
+        changed.height = 200;
+        *w.screens.lock().unwrap() = vec![changed];
+        w.run(Command::Tick);
+        assert_eq!(w.run(Command::Next(None)).error, None);
+        let current = w.state().current.unwrap();
+        let [photo] = current.photos.as_slice() else {
+            panic!("one shared photo (per_display {per_display})");
+        };
+        assert_eq!(
+            image::image_dimensions(&photo.file).unwrap(),
+            (320, 200),
+            "the photo after the change is sized for it (per_display {per_display})"
+        );
+        let next = w.state().next.expect("a photo is prefetched again");
+        assert_eq!(
+            image::image_dimensions(&next.photos[0].file).unwrap(),
+            (320, 200),
+            "the prefetched photo follows the change (per_display {per_display})"
+        );
+    }
+}
+
+#[test]
 fn one_photo_for_every_display_covers_the_widest_and_tallest() {
     let mut w = World::new(config(&[SourceId::Favorites]), mixed_layout());
     w.add_favorites(&["a.png", "b.png"]);
