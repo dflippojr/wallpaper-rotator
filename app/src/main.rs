@@ -4,7 +4,7 @@
 #[cfg(any(all(windows, debug_assertions), test))]
 mod automation;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -430,7 +430,7 @@ fn main() {
             &mut context.config_mut().app.windows,
             std::env::var("TAURI_WEBVIEW_AUTOMATION").as_deref() == Ok("true"),
             std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").ok(),
-            std::env::var_os("WEBVIEW2_USER_DATA_FOLDER").map(PathBuf::from),
+            std::env::var_os("WEBVIEW2_USER_DATA_FOLDER").map(std::path::PathBuf::from),
         );
         context
     };
@@ -558,6 +558,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn photo(author: &str, source: &str) -> WallpaperView {
         WallpaperView {
