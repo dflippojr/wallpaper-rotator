@@ -5,7 +5,9 @@ const snapshot = require('./fixtures/state.json');
 
 // Install before app.js executes. Every IPC call is recorded, including reads.
 const test = base.extend({
-  page: async ({ page }, use) => {
+  // The backend's snapshot when the popover first loads.
+  initialState: [snapshot, { option: true }],
+  page: async ({ page, initialState }, use) => {
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
     page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
@@ -14,6 +16,11 @@ const test = base.extend({
       window.recordedCalls = [];
       const listeners = {};
       window.emitState = state => listeners.state?.({ payload: state });
+      // The Rust side emits popover-shown each time the tray icon, the menu's
+      // Show or a second launch shows the popover (show_popover in main.rs).
+      window.emitPopoverShown = () => listeners['popover-shown']?.({ payload: null });
+      // Like the worker's notify hook: get_state returns it and a state event carries it.
+      window.publishState = state => { snapshot = state; listeners.state?.({ payload: state }); };
       window.__TAURI__ = {
         core: {
           convertFileSrc: () => preview,
@@ -26,7 +33,7 @@ const test = base.extend({
         event: { listen: async (name, callback) => { listeners[name] = callback; return () => {}; } },
       };
     }, {
-      snapshot,
+      snapshot: initialState,
       preview: pathToFileURL(path.resolve('app/tests/e2e/fixtures/blue.png')).href,
     });
     await page.goto(pathToFileURL(path.resolve('ui/index.html')).href);
@@ -142,4 +149,60 @@ test('blank keys preserve saved credentials and no source prevents saving', asyn
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(page.getByRole('alert')).toHaveText('Tick at least one photo source.');
   expect(await calls(page, 'save_settings')).toHaveLength(1);
+});
+
+async function expectMainView(page) {
+  await expect(page.locator('#view-main')).toBeVisible();
+  await expect(page.locator('#view-settings')).toBeHidden();
+}
+
+async function expectSettingsView(page) {
+  await expect(page.locator('#view-settings')).toBeVisible();
+  await expect(page.locator('#view-main')).toBeHidden();
+}
+
+// Issue #82: closed while Settings was open, the popover reopened on Settings.
+test('reopening the popover from the tray shows the wallpaper view, not Settings', async ({ page }) => {
+  await expectMainView(page);
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await expectSettingsView(page);
+  await page.locator('#f-query').fill('unsaved edit');
+  // The popover hides on blur with Settings open; the tray icon shows it again.
+  await page.evaluate(() => window.emitPopoverShown());
+  await expectMainView(page);
+  await expect(page.locator('#credit')).toHaveText('By Fixture artist');
+  // Unsaved edits are dropped, as Cancel and Escape drop them.
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await expect(page.locator('#f-query')).toHaveValue(snapshot.settings.query);
+  expect(await calls(page, 'save_settings')).toEqual([]);
+});
+
+test.describe('first run with no usable photo source', () => {
+  // Unsplash alone, with no key: no source can supply a photo.
+  const setup = { ...snapshot, needs_setup: true, has_unsplash_key: false, has_pexels_key: false,
+    settings: { ...snapshot.settings, sources: ['unsplash'] } };
+  test.use({ initialState: setup });
+
+  test('Settings opens on its own until a source can supply a photo', async ({ page }) => {
+    await expectSettingsView(page);
+    await page.locator('[data-source="wallhaven"]').check();
+    // Reopening during setup keeps Settings and the edit in progress.
+    await page.evaluate(() => window.emitPopoverShown());
+    await expectSettingsView(page);
+    await expect(page.locator('[data-source="wallhaven"]')).toBeChecked();
+    await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expectMainView(page);
+    await page.evaluate(() => window.emitPopoverShown());
+    await expectSettingsView(page);
+
+    await page.locator('[data-source="favorites"]').check();
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await expectMainView(page);
+    expect((await calls(page, 'save_settings'))[0].args.settings.sources).toEqual(['unsplash', 'favorites']);
+    // The worker reloads the saved config: Favorites needs no key.
+    await page.evaluate(state => window.publishState(state),
+      { ...setup, needs_setup: false, settings: { ...setup.settings, sources: ['unsplash', 'favorites'] } });
+    await page.evaluate(() => window.emitPopoverShown());
+    await expectMainView(page);
+  });
 });
