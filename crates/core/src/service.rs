@@ -100,21 +100,15 @@ pub struct WallpaperView {
     pub source: String,
 }
 
+/// The source stores its credit links (Unsplash tags them with UTM when
+/// it builds the candidate), so the view shows them as they are.
 impl From<&Wallpaper> for WallpaperView {
     fn from(w: &Wallpaper) -> Self {
-        let unsplash = w.source == SourceId::Unsplash;
-        let link = |url: &str| {
-            if unsplash {
-                unsplash::with_utm(url)
-            } else {
-                url.to_string()
-            }
-        };
         Self {
             id: w.id.clone(),
             author: w.author.clone(),
-            author_url: link(&w.author_url),
-            photo_url: link(&w.photo_url),
+            author_url: w.author_url.clone(),
+            photo_url: w.photo_url.clone(),
             preview_url: w.preview_url.clone(),
             preview_file: w
                 .preview_url
