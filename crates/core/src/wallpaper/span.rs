@@ -14,14 +14,14 @@ use crate::source::fit_rgb8;
 const MAX_PIXELS: u64 = 500_000_000;
 
 /// A display's place on the canvas: left, top, width, height.
-type Rect = (i64, i64, u32, u32);
+pub(super) type Rect = (i64, i64, u32, u32);
 
 /// Where each display goes on the stitched canvas: GNOME's logical layout
 /// times the highest scale factor, so the sharpest display keeps every
 /// pixel of its photo. A display with a lower scale gets a proportionally
 /// bigger rectangle (its photo is scaled up evenly, never stretched), which
 /// GNOME scales back down to that display's own pixels.
-fn placements(displays: &[&Display]) -> Result<((u32, u32), Vec<Rect>)> {
+pub(super) fn placements(displays: &[&Display]) -> Result<((u32, u32), Vec<Rect>)> {
     let k = displays.iter().map(|d| d.scale()).fold(1.0, f64::max);
     let extent = |d: &&Display| {
         let (w, h) = d.logical_size();

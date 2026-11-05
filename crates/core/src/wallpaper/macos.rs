@@ -72,19 +72,14 @@ pub fn displays() -> Result<Vec<Display>> {
     Ok(NSScreen::screens(mtm)
         .iter()
         .map(|screen| {
-            // Frames are in points; the backing scale gives real pixels.
-            // Positions stay in points, the one space every screen shares.
             let frame = screen.frame();
-            let scale = screen.backingScaleFactor();
-            Display {
-                id: screen_id(&screen),
-                name: screen.localizedName().to_string(),
-                x: frame.origin.x.round() as i32,
-                y: frame.origin.y.round() as i32,
-                width: (frame.size.width * scale).round() as u32,
-                height: (frame.size.height * scale).round() as u32,
-                scale,
-            }
+            super::from_points(
+                screen_id(&screen),
+                screen.localizedName().to_string(),
+                (frame.origin.x, frame.origin.y),
+                (frame.size.width, frame.size.height),
+                screen.backingScaleFactor(),
+            )
         })
         .collect())
 }

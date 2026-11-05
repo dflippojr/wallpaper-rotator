@@ -105,6 +105,28 @@ impl Layout {
     }
 }
 
+/// macOS: a screen from its frame (origin and size in points) and backing
+/// scale. Its photo size is its real pixels; its position stays in points,
+/// the one space every screen shares.
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn from_points(
+    id: String,
+    name: String,
+    (x, y): (f64, f64),
+    (width, height): (f64, f64),
+    scale: f64,
+) -> Display {
+    Display {
+        id,
+        name,
+        x: x.round() as i32,
+        y: y.round() as i32,
+        width: (width * scale).round() as u32,
+        height: (height * scale).round() as u32,
+        scale,
+    }
+}
+
 /// A monitor as the windowing toolkit reports it (GTK, on GNOME): position
 /// and size in physical pixels, and its scale factor.
 #[derive(Debug, Clone, PartialEq)]
@@ -297,6 +319,46 @@ mod tests {
         let got: Vec<_> = displays.iter().map(|d| (d.x, d.scale)).collect();
         assert_eq!(got, [(0, 1.25), (2500, 1.0), (4072, 1.0)]);
         assert_eq!(displays[2].name, "Display 3");
+    }
+
+    /// The issue's Mac layout, with the external monitor placed left of
+    /// the panel: positions stay in points (the old code multiplied each by
+    /// its own screen's scale, so mixed screens no longer touched).
+    #[test]
+    fn mac_screens_are_sized_in_pixels_and_placed_in_points() {
+        let panel = from_points(
+            "1".into(),
+            "Built-in".into(),
+            (0.0, 0.0),
+            (1512.0, 982.0),
+            2.0,
+        );
+        let external = from_points(
+            "2".into(),
+            "External".into(),
+            (-2560.0, 0.0),
+            (2560.0, 1440.0),
+            1.0,
+        );
+        let above = from_points(
+            "3".into(),
+            "Above".into(),
+            (0.0, 982.0),
+            (1440.0, 2560.0),
+            2.0,
+        );
+        let got: Vec<_> = [&panel, &external, &above]
+            .iter()
+            .map(|d| (d.x, d.y, d.width, d.height, d.scale))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (0, 0, 3024, 1964, 2.0),
+                (-2560, 0, 2560, 1440, 1.0),
+                (0, 982, 2880, 5120, 2.0),
+            ]
+        );
     }
 
     #[test]

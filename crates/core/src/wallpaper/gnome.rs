@@ -94,8 +94,9 @@ fn prop<'a, T: TryFrom<&'a OwnedValue>>(props: &'a Props, key: &str) -> Option<T
 }
 
 /// One display per logical monitor (mirrored monitors share one): the
-/// current mode of its monitor, turned as the monitor is, at the logical
-/// monitor's scale, positioned in GNOME's logical layout.
+/// current mode of its monitor, turned as the monitor is, positioned in
+/// GNOME's layout, with the scale from layout pixels to physical ones (the
+/// logical monitor's scale, or 1 in physical layout mode).
 pub(crate) fn from_state((_, monitors, logical, props): &CurrentState) -> Vec<Display> {
     let physical_layout = prop::<u32>(props, "layout-mode") == Some(PHYSICAL_LAYOUT);
     logical
@@ -110,17 +111,13 @@ pub(crate) fn from_state((_, monitors, logical, props): &CurrentState) -> Vec<Di
             let (w, h) = (u32::try_from(*w).ok()?, u32::try_from(*h).ok()?);
             // Odd transforms turn the monitor a quarter.
             let (width, height) = if transform % 2 == 1 { (h, w) } else { (w, h) };
-            let scale = if scale.is_finite() && *scale > 0.0 {
-                *scale
-            } else {
+            // In physical layout mode (X11) the layout itself is in
+            // physical pixels: positions and sizes ignore the scale, so as
+            // far as placing photos goes, every monitor is at scale 1.
+            let scale = if physical_layout || !(scale.is_finite() && *scale > 0.0) {
                 1.0
-            };
-            let logical = |v: i32| {
-                if physical_layout {
-                    (f64::from(v) / scale).round() as i32
-                } else {
-                    v
-                }
+            } else {
+                *scale
             };
             let connector = spec.0.clone();
             let name = prop::<&str>(monitor_props, "display-name")
@@ -129,8 +126,8 @@ pub(crate) fn from_state((_, monitors, logical, props): &CurrentState) -> Vec<Di
             Some(Display {
                 id: connector,
                 name,
-                x: logical(*x),
-                y: logical(*y),
+                x: *x,
+                y: *y,
                 width,
                 height,
                 scale,
@@ -247,6 +244,7 @@ mod tests {
 
     #[test]
     fn mutter_monitors_keep_their_own_pixels_scale_and_turn() {
+        // Logical layout mode, stated or (without the property) assumed.
         for layout_mode in [None, Some(1)] {
             let displays = from_state(&mixed_state(layout_mode));
             let got: Vec<_> = displays
@@ -277,17 +275,44 @@ mod tests {
         }
     }
 
+    /// Physical layout mode (X11): positions and sizes are mode pixels,
+    /// whatever the scales say, so the layout is kept as it is and every
+    /// display is placed at scale 1.
     #[test]
-    fn physical_layout_positions_are_turned_into_logical_ones() {
-        // X11: positions are physical and every monitor shares one scale.
+    fn physical_layout_keeps_mutters_physical_geometry() {
+        let (serial, monitors, mut logical, props) = mixed_state(Some(PHYSICAL_LAYOUT));
+        // The same monitors, laid out in physical pixels.
+        logical[1].0 = 3024;
+        logical[2].0 = 5584;
+        logical[3].1 = 1964;
+        let displays = from_state(&(serial, monitors, logical, props));
+        let got: Vec<_> = displays
+            .iter()
+            .map(|d| (d.x, d.y, d.width, d.height, d.scale))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (0, 0, 3024, 1964, 1.0),
+                (3024, 0, 2560, 1440, 1.0),
+                (5584, 0, 1440, 2560, 1.0),
+                (0, 1964, 3840, 2160, 1.0),
+            ]
+        );
+    }
+
+    /// Stitched in physical layout mode, the panel and the monitor beside
+    /// it touch: no gap opens where the layout has none.
+    #[test]
+    fn physical_layout_stitches_without_gaps() {
         let (serial, monitors, mut logical, props) = mixed_state(Some(PHYSICAL_LAYOUT));
         logical.truncate(2);
-        logical[0].2 = 2.0;
         logical[1].0 = 3024;
-        logical[1].2 = 2.0;
         let displays = from_state(&(serial, monitors, logical, props));
-        let xs: Vec<_> = displays.iter().map(|d| (d.x, d.width)).collect();
-        assert_eq!(xs, [(0, 3024), (1512, 2560)]);
+        let refs: Vec<&Display> = displays.iter().collect();
+        let (canvas, rects) = super::super::span::placements(&refs).unwrap();
+        assert_eq!(canvas, (5584, 1964));
+        assert_eq!(rects, [(0, 0, 3024, 1964), (3024, 0, 2560, 1440)]);
     }
 
     /// A stand-in for Mutter, served over a socket pair, so the real D-Bus
