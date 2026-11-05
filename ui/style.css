@@ -132,6 +132,17 @@ nav { display: flex; gap: 6px; }
 }
 .primary:hover, .primary:focus-visible { background: var(--accent-hover); }
 .primary:disabled { opacity: 0.5; cursor: default; }
+.favorite-row { display: flex; gap: 8px; margin: 8px 14px 0; }
+.favorite-row .primary { flex: 1; width: auto; margin: 0; }
+.secondary {
+  padding: 11px 12px;
+  border: 0;
+  border-radius: var(--radius);
+  background: var(--panel);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.secondary:hover, .secondary:focus-visible { background: var(--accent-hover); }
 
 footer {
   display: flex;
@@ -192,3 +203,4 @@ footer a.plain { pointer-events: none; font-weight: 400; color: var(--muted); }
 .actions .primary { background: var(--accent); }
 .link { display: block; margin: 6px auto 0; background: none; border: 0; color: var(--muted); font-size: 12px; }
 .link:hover { color: var(--text); text-decoration: underline; }
+.sources .link { margin: 0; padding: 0; justify-self: start; align-self: center; text-align: left; }

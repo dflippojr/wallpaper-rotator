@@ -13,9 +13,6 @@
       <span>Wallpaper Rotator</span>
     </div>
     <nav>
-      <button id="btn-folder" class="icon" title="Open favorites folder" aria-label="Open favorites folder">
-        <svg viewBox="0 0 24 24"><path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z" fill="currentColor"/></svg>
-      </button>
       <button id="btn-settings" class="icon" title="Settings" aria-label="Settings">
         <svg viewBox="0 0 24 24"><path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7zm8.4 4.6l1.6 1.2-1.8 3.2-1.9-.7a7.6 7.6 0 0 1-1.6.9l-.3 2h-3.6l-.3-2a7.6 7.6 0 0 1-1.6-.9l-1.9.7L5.2 14.3l1.6-1.2a7.4 7.4 0 0 1 0-2.2L5.2 9.7 7 6.5l1.9.7a7.6 7.6 0 0 1 1.6-.9l.3-2h3.6l.3 2c.6.2 1.1.5 1.6.9l1.9-.7 1.8 3.2-1.6 1.2c.1.7.1 1.5 0 2.2z" fill="currentColor"/></svg>
       </button>
@@ -38,7 +35,10 @@
 
     <p class="status" id="status" role="status" aria-live="polite"></p>
 
-    <button id="btn-favorite" class="primary">Save to Favorites</button>
+    <div class="favorite-row">
+      <button id="btn-favorite" class="primary">Save to Favorites</button>
+      <button id="btn-folder" class="secondary">Open favorites folder</button>
+    </div>
 
     <footer>
       <a href="#" id="credit">&nbsp;</a>
@@ -61,6 +61,7 @@
       <label class="check"><input type="checkbox" data-source="wallhaven"> Wallhaven</label>
       <label class="check"><input type="checkbox" data-source="daily"> Photo of the day</label>
       <label class="check"><input type="checkbox" data-source="favorites"> My favorites</label>
+      <button type="button" id="btn-folder-settings" class="link">Open favorites folder</button>
     </fieldset>
     <p class="hint">Daily: Bing + Wikimedia. Wallhaven and Bing: personal use.</p>
     <label id="search-field">Search <span class="muted">(Unsplash, Pexels, Wallhaven)</span>
