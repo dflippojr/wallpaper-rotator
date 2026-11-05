@@ -100,21 +100,15 @@ pub struct WallpaperView {
     pub source: String,
 }
 
+/// The source stores its credit links (Unsplash tags them with UTM when
+/// it builds the candidate), so the view shows them as they are.
 impl From<&Wallpaper> for WallpaperView {
     fn from(w: &Wallpaper) -> Self {
-        let unsplash = w.source == SourceId::Unsplash;
-        let link = |url: &str| {
-            if unsplash {
-                unsplash::with_utm(url)
-            } else {
-                url.to_string()
-            }
-        };
         Self {
             id: w.id.clone(),
             author: w.author.clone(),
-            author_url: link(&w.author_url),
-            photo_url: link(&w.photo_url),
+            author_url: w.author_url.clone(),
+            photo_url: w.photo_url.clone(),
             preview_url: w.preview_url.clone(),
             preview_file: w
                 .preview_url
@@ -1334,6 +1328,49 @@ mod tests {
 
     fn cached(svc: &Service, id: &str) -> Set {
         Set::single(photo(svc, id, None))
+    }
+
+    /// A stored photo with the given source and credit links.
+    fn stored(source: SourceId, author_url: &str, photo_url: &str) -> Wallpaper {
+        Wallpaper {
+            id: "p1".into(),
+            file: PathBuf::from("p1.jpg"),
+            author: "Ann".into(),
+            author_url: author_url.into(),
+            photo_url: photo_url.into(),
+            preview_url: String::new(),
+            location: None,
+            description: None,
+            download_location: String::new(),
+            color: None,
+            source,
+            display: None,
+        }
+    }
+
+    /// Characterization for #51: the links a view shows for photos whose
+    /// source already stored them (Unsplash tagged, Pexels as given).
+    #[test]
+    fn view_shows_the_links_the_source_stored() {
+        let tagged = format!("https://unsplash.com/@ann?{}", unsplash::UTM);
+        let view = WallpaperView::from(&stored(SourceId::Unsplash, &tagged, &tagged));
+        assert!(view.author_url.contains("utm_source="));
+        assert_eq!(view.photo_url, tagged);
+
+        let pexels = "https://www.pexels.com/@ann";
+        let view = WallpaperView::from(&stored(SourceId::Pexels, pexels, pexels));
+        assert_eq!(view.author_url, pexels);
+        assert_eq!(view.photo_url, pexels);
+    }
+
+    /// #51 option (a): the source owns the UTM rule, so the view shows an
+    /// untagged link as stored. Fails on the base branch, which tags it.
+    #[test]
+    fn view_does_not_retag_a_link_the_source_stored_untagged() {
+        let plain = "https://unsplash.com/photos/x";
+        let view = WallpaperView::from(&stored(SourceId::Unsplash, plain, plain));
+        assert_eq!(view.author_url, plain);
+        assert_eq!(view.photo_url, plain);
     }
 
     #[test]
