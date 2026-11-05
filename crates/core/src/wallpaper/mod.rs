@@ -182,4 +182,45 @@ mod tests {
         assert_eq!(same.file_for("any", 5), Some(Path::new("all.jpg")));
         assert_eq!(Layout::Each(Vec::new()).file_for("any", 0), None);
     }
+
+    /// GTK reports each monitor's position and size in physical pixels: its
+    /// logical geometry times its own scale. The MacBook-style panel is
+    /// 1512x982 logical at scale 2, the external 2560x1440 at scale 1 to its
+    /// right, and a rotated portrait 1440x2560 at scale 1 after that.
+    fn mixed_monitors() -> Vec<Monitor> {
+        let monitor = |name: &str, x: i32, width: u32, height: u32, scale: f64| Monitor {
+            name: Some(name.into()),
+            x,
+            y: 0,
+            width,
+            height,
+            scale,
+        };
+        vec![
+            monitor("Built-in", 0, 3024, 1964, 2.0),
+            monitor("External", 1512, 2560, 1440, 1.0),
+            monitor("Portrait", 4072, 1440, 2560, 1.0),
+        ]
+    }
+
+    #[test]
+    fn toolkit_monitors_are_sized_at_their_own_physical_pixels() {
+        let displays = toolkit_displays(&mixed_monitors());
+        let sizes: Vec<_> = displays
+            .iter()
+            .map(|d| (d.name.as_str(), d.width, d.height))
+            .collect();
+        assert_eq!(
+            sizes,
+            [
+                ("Built-in", 3024, 1964),
+                ("External", 2560, 1440),
+                ("Portrait", 1440, 2560),
+            ],
+            "each display's photo size is its own physical pixels"
+        );
+        // Positions stay in GNOME's logical layout, where the monitors touch.
+        let xs: Vec<_> = displays.iter().map(|d| d.x).collect();
+        assert_eq!(xs, [0, 1512, 4072]);
+    }
 }

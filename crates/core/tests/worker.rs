@@ -1232,3 +1232,71 @@ fn a_valid_state_file_cleans_up_stale_images_at_startup() {
     assert_eq!(names(&files), ["cur.jpg"]);
     assert!(applied.is_empty());
 }
+
+/// A Retina panel (scale 2), an external monitor (scale 1) and a rotated
+/// portrait one, as macOS and Windows list them: each in its own physical
+/// pixels. Sizes are a tenth of 3024x1964, 2560x1440 and 1440x2560 to keep
+/// the test light; positions are in the logical layout.
+fn mixed_layout() -> Vec<rotator_core::wallpaper::Display> {
+    let at =
+        |x: i32, s: rotator_core::wallpaper::Display| rotator_core::wallpaper::Display { x, ..s };
+    vec![
+        at(0, screen("retina", 302, 196)),
+        at(151, screen("external", 256, 144)),
+        at(407, screen("portrait", 144, 256)),
+    ]
+}
+
+#[test]
+fn each_display_gets_a_photo_fetched_and_cropped_at_its_own_size() {
+    let screens = mixed_layout();
+    let mut w = World::new(
+        Config {
+            per_display: true,
+            ..config(&[SourceId::Favorites])
+        },
+        screens.clone(),
+    );
+    w.add_favorites(&["a.png", "b.png", "c.png", "d.png", "e.png", "f.png"]);
+    let snap = w.run(Command::Next(None));
+    assert_eq!(snap.error, None);
+
+    for set in [w.state().current.unwrap(), w.state().next.unwrap()] {
+        assert_eq!(set.photos.len(), screens.len());
+        for (photo, screen) in set.photos.iter().zip(&screens) {
+            let display = photo.display.as_ref().expect("a photo per display");
+            assert_eq!(display.id, screen.id, "photos follow the display order");
+            assert_eq!(
+                image::image_dimensions(&photo.file).unwrap(),
+                (screen.width, screen.height),
+                "{}'s photo is cropped to its own size, not another display's",
+                screen.id
+            );
+        }
+        let ids: HashSet<_> = set.photos.iter().map(|p| &p.id).collect();
+        assert_eq!(
+            ids.len(),
+            screens.len(),
+            "a different photo on each display"
+        );
+    }
+}
+
+#[test]
+fn one_photo_for_every_display_covers_the_widest_and_tallest() {
+    let mut w = World::new(config(&[SourceId::Favorites]), mixed_layout());
+    w.add_favorites(&["a.png", "b.png"]);
+    let snap = w.run(Command::Next(None));
+    assert_eq!(snap.error, None);
+    let current = w.state().current.unwrap();
+    let [photo] = current.photos.as_slice() else {
+        panic!("one photo for every display");
+    };
+    assert_eq!(photo.display, None);
+    assert_eq!(
+        image::image_dimensions(&photo.file).unwrap(),
+        (302, 256),
+        "the widest width and the tallest height of any display"
+    );
+    assert_eq!(current.layout(), Layout::Same(photo.file.clone()));
+}
