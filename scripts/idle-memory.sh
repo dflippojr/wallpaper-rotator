@@ -15,8 +15,11 @@
 #
 # What it sums, per OS (scripts/idle-memory.ps1 does Windows):
 #   macOS  `footprint` (phys_footprint) of the app and the com.apple.WebKit.*
-#          XPC processes whose responsible process is the app. Those run under
-#          launchd, not as children, so they are matched by responsibility.
+#          XPC processes it uses. Those run under launchd, not as children, so
+#          they are matched by responsible process: the app itself when it runs
+#          from its .app bundle, or the terminal that launched a bare binary.
+#          In the second case, WebKit processes that were already running
+#          before the launch are left out.
 #   Linux  PSS (smaps_rollup; RSS if unreadable) of the app and every process
 #          it started (WebKitGTK's WebKitWebProcess and WebKitNetworkProcess).
 #
@@ -32,6 +35,7 @@ cd "$(dirname "$0")/.."
 wait_secs=60
 pid=""
 binary=""
+before_webkit=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --wait) wait_secs=$2; shift 2 ;;
@@ -79,7 +83,8 @@ cache_cap_mb = 20
 EOF
   # A current photo on disk, so the paused app has nothing to rotate. A dry
   # run never calls the OS wallpaper setter.
-  WALLPAPER_ROTATOR_HOME=$home ROTATOR_SIZE=320x200 "$cli" rotate --dry-run >/dev/null
+  WALLPAPER_ROTATOR_HOME=$home ROTATOR_SIZE=320x200 "$cli" rotate --dry-run >/dev/null 2>&1
+  before_webkit=$(pgrep -f 'com\.apple\.WebKit\.' | tr '\n' ' ' || true)
   WALLPAPER_ROTATOR_HOME=$home UNSPLASH_ACCESS_KEY='' PEXELS_API_KEY='' \
     "$binary" >"$home/app.out" 2>&1 &
   pid=$!
@@ -98,15 +103,16 @@ measure_macos() {
   local helpers
   # The responsible process of a WebKit XPC service is the app that asked
   # for it (libSystem's responsibility_get_pid_responsible_for_pid).
-  helpers=$(/usr/bin/python3 - "$pid" <<'EOF'
+  helpers=$(/usr/bin/python3 - "$pid" "$before_webkit" <<'EOF'
 import ctypes, subprocess, sys
-app = int(sys.argv[1])
+app, earlier = int(sys.argv[1]), set(sys.argv[2].split())
 responsible = ctypes.CDLL(None).responsibility_get_pid_responsible_for_pid
 responsible.restype, responsible.argtypes = ctypes.c_int, [ctypes.c_int]
+owner = responsible(app)
 ps = subprocess.run(["ps", "-axo", "pid=,comm="], capture_output=True, text=True).stdout
 for line in ps.splitlines():
     p, _, comm = line.strip().partition(" ")
-    if "com.apple.WebKit." in comm and int(p) != app and responsible(int(p)) == app:
+    if "com.apple.WebKit." in comm and p not in earlier and responsible(int(p)) == owner:
         print(p)
 EOF
   )
