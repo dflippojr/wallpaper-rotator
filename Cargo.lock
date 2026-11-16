@@ -4455,6 +4455,7 @@ dependencies = [
  "anyhow",
  "rotator-core",
  "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-autostart",

@@ -5,6 +5,7 @@
 mod automation;
 
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -19,7 +20,8 @@ use tauri::image::Image;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{
-    AppHandle, Emitter, Manager, PhysicalPosition, Rect, State, WebviewWindow, WindowEvent,
+    AppHandle, Emitter, Manager, PhysicalPosition, Rect, State, WebviewWindow,
+    WebviewWindowBuilder, WindowEvent,
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt as _};
 use tauri_plugin_opener::OpenerExt;
@@ -32,6 +34,40 @@ struct AppState {
     /// the blur doesn't immediately reopen it.
     last_hidden: Mutex<Option<Instant>>,
     pause_item: Mutex<Option<CheckMenuItem<tauri::Wry>>>,
+    popover: PopoverLife,
+}
+
+/// The popover's label in `tauri.conf.json`. Its window is not created at
+/// startup (`"create": false`); `popover` builds it from that config.
+const POPOVER: &str = "main";
+
+/// How long a hidden popover keeps its webview, so a quick re-open is instant.
+/// After that it is destroyed and the webview engine's processes can exit.
+const POPOVER_GRACE: Duration = Duration::from_secs(30);
+
+/// Decides when a hidden popover's webview may be destroyed. Each hide takes
+/// a ticket; any later show or hide makes older tickets stale, so only the
+/// most recent hide, with no show since, destroys the window.
+#[derive(Default)]
+struct PopoverLife {
+    generation: AtomicU64,
+}
+
+impl PopoverLife {
+    /// The popover was shown: pending destroys no longer apply.
+    fn shown(&self) {
+        self.generation.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// The popover was hidden: returns the ticket a later destroy must hold.
+    fn hidden(&self) -> u64 {
+        self.generation.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    /// Whether the destroy scheduled with `ticket` should still go ahead.
+    fn may_destroy(&self, ticket: u64, visible: bool) -> bool {
+        !visible && self.generation.load(Ordering::SeqCst) == ticket
+    }
 }
 
 impl AppState {
@@ -173,8 +209,8 @@ fn open_favorites_with(
 }
 
 #[tauri::command]
-fn hide_window(window: WebviewWindow) {
-    let _ = window.hide();
+fn hide_window(app: AppHandle) {
+    hide_popover(&app);
 }
 
 #[tauri::command]
@@ -233,8 +269,62 @@ fn place_near(window: &WebviewWindow, icon: &Rect) -> tauri::Result<()> {
     window.set_position(PhysicalPosition::new(x, y.max(my)))
 }
 
+/// The popover window, built from its config when it doesn't exist yet.
+fn popover(app: &AppHandle) -> Option<WebviewWindow> {
+    if let Some(window) = app.get_webview_window(POPOVER) {
+        return Some(window);
+    }
+    let built = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|w| w.label == POPOVER)
+        .ok_or_else(|| anyhow::anyhow!("no {POPOVER} window in the config"))
+        .and_then(|config| Ok(WebviewWindowBuilder::from_config(app, config)?.build()?));
+    match built {
+        Ok(window) => Some(window),
+        Err(e) => {
+            let paths = &app.state::<AppState>().paths;
+            log::write(
+                &paths.log_file,
+                &format!("could not open the popover: {e:#}"),
+            );
+            None
+        }
+    }
+}
+
+/// Hides the popover and destroys its webview once it has stayed hidden for
+/// `POPOVER_GRACE`, so the engine isn't resident while the app idles.
+fn hide_popover(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window(POPOVER) {
+        let _ = window.hide();
+    }
+    let app = app.clone();
+    let ticket = app.state::<AppState>().popover.hidden();
+    std::thread::spawn(move || {
+        std::thread::sleep(POPOVER_GRACE);
+        let main = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            let Some(window) = main.get_webview_window(POPOVER) else {
+                return;
+            };
+            let visible = window.is_visible().unwrap_or(true);
+            if main
+                .state::<AppState>()
+                .popover
+                .may_destroy(ticket, visible)
+            {
+                let _ = window.destroy();
+            }
+        });
+    });
+}
+
 fn show_popover(app: &AppHandle, near: Option<&Rect>) {
-    let Some(window) = app.get_webview_window("main") else {
+    app.state::<AppState>().popover.shown();
+    let Some(window) = popover(app) else {
         return;
     };
     match near {
@@ -251,12 +341,11 @@ fn show_popover(app: &AppHandle, near: Option<&Rect>) {
 }
 
 fn toggle_popover(app: &AppHandle, near: &Rect) {
-    let Some(window) = app.get_webview_window("main") else {
-        return;
-    };
-    if window.is_visible().unwrap_or(false) {
-        let _ = window.hide();
-        return;
+    if let Some(window) = app.get_webview_window(POPOVER) {
+        if window.is_visible().unwrap_or(false) {
+            hide_popover(app);
+            return;
+        }
     }
     let state = app.state::<AppState>();
     let just_hidden = state
@@ -493,6 +582,7 @@ fn main() {
                 paths: paths.clone(),
                 last_hidden: Mutex::new(None),
                 pause_item: Mutex::new(None),
+                popover: PopoverLife::default(),
             });
             build_tray(&handle, first.settings.paused)?;
             if let Some(enabled) = start_at_login {
@@ -518,20 +608,21 @@ fn main() {
             // Behave like a popover: hide when focus moves elsewhere.
             WindowEvent::Focused(false) => {
                 if window.is_visible().unwrap_or(false) {
-                    let _ = window.hide();
+                    hide_popover(window.app_handle());
                     *window.state::<AppState>().last_hidden.lock().unwrap() = Some(Instant::now());
                 }
             }
             WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
-                let _ = window.hide();
+                hide_popover(window.app_handle());
             }
             _ => {}
         })
         .build(context)
         .expect("error while building Wallpaper Rotator")
         .run(|_app, event| {
-            // Closing the popover must not quit the tray app.
+            // Destroying the popover, the only window, must not quit the
+            // tray app; it lives on in the tray until Quit.
             if let tauri::RunEvent::ExitRequested {
                 code: None, api, ..
             } = event
@@ -552,6 +643,56 @@ mod tests {
             source: source.into(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_popover_left_hidden_is_destroyed() {
+        let life = PopoverLife::default();
+        let ticket = life.hidden();
+        assert!(life.may_destroy(ticket, false));
+    }
+
+    #[test]
+    fn reopening_within_the_grace_period_keeps_the_popover() {
+        let life = PopoverLife::default();
+        let ticket = life.hidden();
+        life.shown();
+        assert!(
+            !life.may_destroy(ticket, false),
+            "a show cancels the destroy"
+        );
+        assert!(!life.may_destroy(ticket, true));
+    }
+
+    #[test]
+    fn only_the_latest_hide_destroys_the_popover() {
+        let life = PopoverLife::default();
+        let first = life.hidden();
+        life.shown();
+        let second = life.hidden();
+        assert!(!life.may_destroy(first, false), "stale ticket");
+        assert!(life.may_destroy(second, false));
+    }
+
+    #[test]
+    fn a_visible_popover_is_never_destroyed() {
+        let life = PopoverLife::default();
+        let ticket = life.hidden();
+        assert!(!life.may_destroy(ticket, true));
+    }
+
+    #[test]
+    fn the_popover_is_created_on_demand_not_at_startup() {
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let windows = config["app"]["windows"].as_array().unwrap();
+        let popover = windows
+            .iter()
+            .find(|w| w["label"] == POPOVER)
+            .expect("the popover's window config");
+        assert_eq!(popover["create"], false, "no webview at startup");
+        assert_eq!(popover["visible"], false, "built hidden, shown once placed");
+        assert_eq!(windows.len(), 1, "no other window keeps a webview alive");
     }
 
     #[test]
