@@ -4,6 +4,7 @@
 #[cfg(any(all(windows, debug_assertions), test))]
 mod automation;
 mod commands;
+mod focus;
 mod popover;
 mod tray;
 
@@ -245,6 +246,8 @@ fn main() {
             // Behave like a popover: hide when focus moves elsewhere.
             WindowEvent::Focused(false) => {
                 if window.is_visible().unwrap_or(false) {
+                    let log_file = &window.state::<AppState>().paths.log_file;
+                    log::write(log_file, &focus::blur_message(focus::taker().as_deref()));
                     hide_popover(window.app_handle());
                     *window.state::<AppState>().last_hidden.lock().unwrap() = Some(Instant::now());
                 }

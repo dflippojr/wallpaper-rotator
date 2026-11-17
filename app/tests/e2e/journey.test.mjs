@@ -131,10 +131,24 @@ test('real popover Refresh changes the photo through Tauri and the worker', { ti
   const probe = startProbe(await buildProbe());
   let driver;
   const status = async () => (await exec(cli, ['status'], { env, timeout: 10000 })).stdout;
-  const snapshot = () => browser.executeAsyncScript(function () {
-    const done = arguments[arguments.length - 1];
-    window.__TAURI__.core.invoke('get_state').then(done, error => done({ ipcError: String(error) }));
-  });
+  // The popover hides on blur and its webview is destroyed 3 s later (#98).
+  // Name that instead of failing on a dead session or a null snapshot.
+  const popoverEvents = async () => (await readFile(path.join(home, 'rotator.log'), 'utf8').catch(() => ''))
+    .split('\n').map(line => line.replace(/^\d+ /, '')).filter(line => line.startsWith('popover '));
+  const assertPopoverShown = async when => {
+    const events = await popoverEvents();
+    assert.ok(!events.some(event => /^popover (hidden|webview destroyed)/.test(event)),
+      'popover hidden ' + when + ':\n' + events.join('\n'));
+  };
+  const snapshot = async () => {
+    const state = await browser.executeAsyncScript(function () {
+      const done = arguments[arguments.length - 1];
+      window.__TAURI__.core.invoke('get_state').then(done, error => done({ ipcError: String(error) }));
+    });
+    if (state === null) await assertPopoverShown('while its state was read');
+    assert.ok(state, 'get_state returned no snapshot');
+    return state;
+  };
   try {
     await probe.ready();
     driver = spawn(process.env.TAURI_DRIVER || 'tauri-driver', driverArgs, {
@@ -170,6 +184,7 @@ test('real popover Refresh changes the photo through Tauri and the worker', { ti
     assert.match(beforeStatus, /^current: (?!none)/m);
     await writeFile(path.join(output, 'before-status.txt'), beforeStatus);
     const beforeOS = await probe.verify(before.current[0], 'before');
+    await assertPopoverShown('before Refresh');
     // This is a native WebDriver click on the real button. No IPC is mocked.
     await refresh.click();
     const after = await waitFor(async () => {
@@ -178,6 +193,7 @@ test('real popover Refresh changes the photo through Tauri and the worker', { ti
       assert.equal(state.error, null, 'Refresh app error');
       return !state.busy && state.current[0]?.id !== before.current[0].id && state.current.length > 0 && state;
     }, 'Refresh to finish with a different photo');
+    await assertPopoverShown('during Refresh');
     const afterOS = await probe.verify(after.current[0], 'after');
     assert.notEqual(afterOS, beforeOS, 'OS wallpaper changed after Refresh');
     const afterStatus = await status();
