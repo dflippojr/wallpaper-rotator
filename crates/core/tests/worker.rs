@@ -8,13 +8,15 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, Barrier};
+use std::thread;
 
 use common::stub_api::Route;
 use common::{config, screen, World, PEXELS_KEY, UNSPLASH_KEY};
 use image::{Rgb, RgbImage};
 use rotator_core::config::Config;
 use rotator_core::paths::Paths;
-use rotator_core::service::{Command, Hooks, Service};
+use rotator_core::service::{Command, Hooks, Service, Settings};
 use rotator_core::source::SourceId;
 use rotator_core::wallpaper::{Display, Layout};
 
@@ -762,6 +764,57 @@ fn no_command_overwrites_settings_saved_while_it_was_queued() {
         assert_eq!(on_disk.query, "saved while queued", "{command:?}");
         assert_eq!(on_disk.pexels_key, "saved-pexels-key", "{command:?}");
         assert_eq!(on_disk.interval_minutes, 7, "{command:?}");
+    }
+}
+
+/// What `save_settings` (app/src/commands.rs) does on the Tauri command
+/// thread when the user presses Save.
+fn save_settings(path: &Path, settings: &Settings) {
+    let mut config = Config::load_or_create(path).unwrap();
+    settings.apply_to(&mut config, None, None).unwrap();
+    config.save(path).unwrap();
+}
+
+/// #92: Save runs on the Tauri command thread while the worker handles the
+/// tray's Pause, so the two can overlap, not just queue (#60). The form has
+/// Pause rotation ticked too, so either order ends paused; what must
+/// survive is the rest of the Save, which a Pause that read the file first
+/// would write back over. Bounded rounds, no spinning.
+#[test]
+fn a_save_and_a_pause_that_overlap_keep_both_changes() {
+    let mut w = World::new(config(&[SourceId::Unsplash]), vec![screen("1", 160, 90)]);
+    let path = w.paths.config_file.clone();
+    for round in 0..200 {
+        let mut start = Config::load_or_create(&path).unwrap();
+        start.paused = false;
+        start.save(&path).unwrap();
+        w.run(Command::Reload);
+
+        // Not a source setting, so the Reload above has no photos to refetch.
+        let interval = 1000 + round;
+        let settings = Settings {
+            interval_minutes: interval,
+            paused: true,
+            ..Settings::from_config(&start)
+        };
+        let barrier = Arc::new(Barrier::new(2));
+        let saver = {
+            let (barrier, path) = (barrier.clone(), path.clone());
+            thread::spawn(move || {
+                barrier.wait();
+                save_settings(&path, &settings);
+            })
+        };
+        barrier.wait();
+        w.svc.handle(Command::SetPaused(true));
+        saver.join().unwrap();
+
+        let on_disk = Config::load_or_create(&path).unwrap();
+        assert_eq!(
+            on_disk.interval_minutes, interval,
+            "round {round}: the Save was lost"
+        );
+        assert!(on_disk.paused, "round {round}: the Pause was lost");
     }
 }
 
