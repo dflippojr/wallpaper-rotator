@@ -38,7 +38,10 @@ struct AppState {
 }
 
 /// The popover's label in `tauri.conf.json`. Its window is not created at
-/// startup (`"create": false`); `popover` builds it from that config.
+/// startup (`"create": false`); `popover` builds it from that config. It is
+/// `"incognito"` so its webview has no persistent data store: on macOS the
+/// default store keeps WebKit's Networking process alive after the last
+/// webview is gone. The popover keeps nothing in web storage.
 const POPOVER: &str = "main";
 
 /// How long a hidden popover keeps its webview, so a quick re-open is instant.
@@ -692,6 +695,7 @@ mod tests {
             .expect("the popover's window config");
         assert_eq!(popover["create"], false, "no webview at startup");
         assert_eq!(popover["visible"], false, "built hidden, shown once placed");
+        assert_eq!(popover["incognito"], true, "no data store outlives it");
         assert_eq!(windows.len(), 1, "no other window keeps a webview alive");
     }
 
