@@ -10,6 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Builder, By, until } from 'selenium-webdriver';
+import { popoverEvents, popoverHidden } from './popover-log.mjs';
 
 const exec = promisify(execFile);
 const root = fileURLToPath(new URL('../../../', import.meta.url));
@@ -133,18 +134,21 @@ test('real popover Refresh changes the photo through Tauri and the worker', { ti
   const status = async () => (await exec(cli, ['status'], { env, timeout: 10000 })).stdout;
   // The popover hides on blur and its webview is destroyed 3 s later (#98).
   // Name that instead of failing on a dead session or a null snapshot.
-  const popoverEvents = async () => (await readFile(path.join(home, 'rotator.log'), 'utf8').catch(() => ''))
-    .split('\n').map(line => line.replace(/^\d+ /, '')).filter(line => line.startsWith('popover '));
-  const assertPopoverShown = async when => {
-    const events = await popoverEvents();
-    assert.ok(!events.some(event => /^popover (hidden|webview destroyed)/.test(event)),
-      'popover hidden ' + when + ':\n' + events.join('\n'));
+  const appLog = () => readFile(path.join(home, 'rotator.log'), 'utf8').catch(() => '');
+  const assertPopoverShown = async (when, cause) => {
+    const hidden = popoverHidden(await appLog(), when, cause);
+    if (hidden) throw hidden;
+    if (cause) throw cause;
+  };
+  // Runs a WebDriver call on the popover; if it fails, says first whether the popover hid.
+  const onPopover = async (when, call) => {
+    try { return await call(); } catch (error) { return assertPopoverShown(when, error); }
   };
   const snapshot = async () => {
-    const state = await browser.executeAsyncScript(function () {
+    const state = await onPopover('while its state was read', () => browser.executeAsyncScript(function () {
       const done = arguments[arguments.length - 1];
       window.__TAURI__.core.invoke('get_state').then(done, error => done({ ipcError: String(error) }));
-    });
+    }));
     if (state === null) await assertPopoverShown('while its state was read');
     assert.ok(state, 'get_state returned no snapshot');
     return state;
@@ -186,7 +190,7 @@ test('real popover Refresh changes the photo through Tauri and the worker', { ti
     const beforeOS = await probe.verify(before.current[0], 'before');
     await assertPopoverShown('before Refresh');
     // This is a native WebDriver click on the real button. No IPC is mocked.
-    await refresh.click();
+    await onPopover('as Refresh was clicked', () => refresh.click());
     const after = await waitFor(async () => {
       const state = await snapshot();
       assert.ok(!state.ipcError, state.ipcError);
@@ -203,8 +207,8 @@ test('real popover Refresh changes the photo through Tauri and the worker', { ti
     assert.ok(afterStatus.includes(after.current[0].id), 'CLI and live popover agree on the new photo');
     assert.ok(after.current[0].preview_file.startsWith(home + path.sep), 'app used the isolated home');
     await writeFile(path.join(output, 'after-status.txt'), afterStatus);
-    const appLog = await readFile(path.join(home, 'rotator.log'), 'utf8');
-    assert.doesNotMatch(appLog, /\berror\b|could not|failed/i, 'app log has no errors');
+    const refreshLog = await readFile(path.join(home, 'rotator.log'), 'utf8');
+    assert.doesNotMatch(refreshLog, /\berror\b|could not|failed/i, 'app log has no errors');
     await writeFile(path.join(output, 'snapshots.json'), JSON.stringify({ before, after }, null, 2));
     await writeFile(path.join(output, 'popover.png'), await browser.takeScreenshot(), 'base64');
     console.log('Refresh changed ' + before.current[0].id + ' -> ' + after.current[0].id);
@@ -214,8 +218,7 @@ test('real popover Refresh changes the photo through Tauri and the worker', { ti
     // wait for the app to destroy it, then show it again with a second launch.
     // The single-instance hand-over runs show_popover from an event handler,
     // where building a webview directly deadlocks on Windows.
-    const popoverLog = async () => (await readFile(path.join(home, 'rotator.log'), 'utf8'))
-      .split('\n').map(line => line.replace(/^\d+ /, '')).filter(line => line.startsWith('popover webview'));
+    const popoverLog = async () => popoverEvents(await appLog()).filter(line => line.startsWith('popover webview'));
     const counts = async () => {
       const entries = await popoverLog();
       const count = word => entries.filter(entry => entry === 'popover webview ' + word).length;
