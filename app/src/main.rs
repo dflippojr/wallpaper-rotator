@@ -4,6 +4,7 @@
 #[cfg(any(all(windows, debug_assertions), test))]
 mod automation;
 mod commands;
+mod focus;
 mod popover;
 mod tray;
 
@@ -19,7 +20,7 @@ use tauri::menu::CheckMenuItem;
 use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt as _};
 
-use popover::{hide_popover, show_popover, PopoverLife, POPOVER};
+use popover::{hide_popover, popover_blurred, show_popover, PopoverLife, POPOVER};
 use tray::{build_tray, refresh_tray};
 
 struct AppState {
@@ -245,8 +246,7 @@ fn main() {
             // Behave like a popover: hide when focus moves elsewhere.
             WindowEvent::Focused(false) => {
                 if window.is_visible().unwrap_or(false) {
-                    hide_popover(window.app_handle());
-                    *window.state::<AppState>().last_hidden.lock().unwrap() = Some(Instant::now());
+                    popover_blurred(window.app_handle());
                 }
             }
             WindowEvent::CloseRequested { api, .. } => {

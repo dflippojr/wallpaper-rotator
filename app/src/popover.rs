@@ -4,7 +4,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rotator_core::log;
 use tauri::utils::config::WindowConfig;
@@ -13,7 +13,7 @@ use tauri::{
     AppHandle, Emitter, Manager, PhysicalPosition, Rect, WebviewWindow, WebviewWindowBuilder,
 };
 
-use crate::AppState;
+use crate::{focus, AppState};
 
 /// The popover's label in `tauri.conf.json`. Its window is not created at
 /// startup (`"create": false`); `popover` builds it from that config.
@@ -214,6 +214,53 @@ pub(super) fn hide_popover(app: &AppHandle) {
             }
         });
     });
+}
+
+/// How long after a blur, on Windows, the popover looks at which window is
+/// in front before it decides to hide.
+const BLUR_SETTLE: Duration = Duration::from_millis(150);
+
+/// The visible popover lost focus. Elsewhere it hides at once. On Windows it
+/// hides only if, a moment later, another window is in front: WebView2 can
+/// move the focus inside the popover's own window while it loads, and Tauri
+/// reports that as a blur too (#98), which hid a popover that was still in
+/// front of the user.
+pub(super) fn popover_blurred(app: &AppHandle) {
+    if !cfg!(windows) {
+        hide_on_blur(app, None);
+        return;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(BLUR_SETTLE);
+        let main = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            let Some(window) = main.get_webview_window(POPOVER) else {
+                return;
+            };
+            if !window.is_visible().unwrap_or(false) {
+                return;
+            }
+            let front = focus::foreground();
+            if focus::keeps_popover(front.as_ref(), focus::handle(&window)) {
+                if let Some(front) = &front {
+                    let log_file = &main.state::<AppState>().paths.log_file;
+                    log::write(log_file, &focus::kept_message(front));
+                }
+                return;
+            }
+            hide_on_blur(&main, front.as_ref());
+        });
+    });
+}
+
+/// Hides the popover because it lost focus, and remembers when, so a tray
+/// click that caused the blur doesn't immediately reopen it.
+fn hide_on_blur(app: &AppHandle, front: Option<&focus::Foreground>) {
+    let state = app.state::<AppState>();
+    log::write(&state.paths.log_file, &focus::blur_message(front));
+    hide_popover(app);
+    *state.last_hidden.lock().unwrap() = Some(Instant::now());
 }
 
 /// Shows the popover, next to the tray icon when `near` is given. Callers are
