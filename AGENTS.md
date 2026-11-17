@@ -129,7 +129,13 @@ and CLI status report a different current photo, the preview loads, and the app
 log has no errors. Before and after Refresh it independently confirms the desktop
 through the shared OS read-back helper in crates/core/tests/common/os_wallpaper.rs:
 Windows GetWallpaper/SPI_GETDESKWALLPAPER decode the OS-named file's pixels;
-GNOME checks both picture URIs and picture-options. Then it covers the popover's
+GNOME checks both picture URIs and picture-options. Before and after Refresh it
+reads the app log and fails with "popover hidden before Refresh" (or "during
+Refresh") if the popover hid on blur, instead of a dead WebDriver session. The
+app logs every blur: `popover hidden on blur`, and on Windows the window that
+took the focus. On Windows a blur hides the popover only when another window is
+in front 150 ms later; WebView2 moving the focus inside the popover while it
+loads logs `popover kept after a blur` instead (#98). Then it covers the popover's
 on-demand webview (#42). It hides the popover and waits for the app to destroy its
 webview; the debug-only WALLPAPER_ROTATOR_POPOVER_GRACE_MS shortens the 30 s grace
 period to 3 s. Then it launches the binary a second time, which hands over to the
