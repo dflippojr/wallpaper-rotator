@@ -56,6 +56,7 @@
     <section id="settings-sources" aria-label="Photo sources">
     <fieldset class="sources">
       <legend>Photo sources <span class="muted">(each photo comes from one)</span></legend>
+      <!-- data-source names must be SourceId's serde names, in order (crates/core/tests/ui_contract.rs, #93). -->
       <label class="check"><input type="checkbox" data-source="unsplash"> Unsplash</label>
       <label class="check"><input type="checkbox" data-source="pexels"> Pexels</label>
       <label class="check"><input type="checkbox" data-source="wallhaven"> Wallhaven</label>

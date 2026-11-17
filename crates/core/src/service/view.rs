@@ -8,7 +8,9 @@ use crate::config::{Config, MIN_CACHE_MB};
 use crate::source::{unsplash, SourceId};
 use crate::store::{Set, Wallpaper};
 
-/// What the UI shows.
+/// What the UI shows. The popover's test fixture (`ui/tests/fixtures/state.json`)
+/// copies this shape by hand; `crates/core/tests/ui_contract.rs` fails when the
+/// keys differ, so rename a field on both sides.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Snapshot {
     /// One photo for every display, or one per display.

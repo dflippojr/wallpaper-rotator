@@ -4,6 +4,8 @@
 const { test: base, expect } = require('@playwright/test');
 const { pathToFileURL } = require('node:url');
 const path = require('node:path');
+// This fixture's keys must match Snapshot, Settings and WallpaperView in
+// crates/core/src/service/view.rs. crates/core/tests/ui_contract.rs checks them (#93).
 const snapshot = require('./fixtures/state.json');
 
 // A recorded fake Tauri object, as in popover.spec.cjs. `openError` makes

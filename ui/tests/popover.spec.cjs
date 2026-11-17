@@ -1,6 +1,8 @@
 const { test: base, expect } = require('@playwright/test');
 const { pathToFileURL } = require('node:url');
 const path = require('node:path');
+// This fixture's keys must match Snapshot, Settings and WallpaperView in
+// crates/core/src/service/view.rs. crates/core/tests/ui_contract.rs checks them (#93).
 const snapshot = require('./fixtures/state.json');
 
 // Install before app.js executes. Every IPC call is recorded, including reads.
