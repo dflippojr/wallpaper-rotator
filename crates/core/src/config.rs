@@ -218,6 +218,77 @@ mod tests {
     }
 
     #[test]
+    fn update_starts_from_the_defaults_and_saves_the_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sub/config.toml");
+        let updated = Config::update(&path, |c| {
+            c.paused = true;
+            Ok(())
+        })
+        .unwrap();
+        let expected = Config {
+            paused: true,
+            ..Config::default()
+        };
+        assert_eq!(updated, expected);
+        assert_eq!(Config::load_or_create(&path).unwrap(), expected);
+    }
+
+    #[test]
+    fn update_writes_nothing_when_the_change_fails_or_the_file_is_broken() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        Config::default().save(&path).unwrap();
+        let before = fs::read(&path).unwrap();
+        let err = Config::update(&path, |c| {
+            c.paused = true;
+            anyhow::bail!("bad collection")
+        })
+        .unwrap_err();
+        assert_eq!(err.to_string(), "bad collection");
+        assert_eq!(fs::read(&path).unwrap(), before);
+
+        fs::write(&path, b"paused = [").unwrap();
+        let err = Config::update(&path, |_| Ok(())).unwrap_err();
+        assert!(err.downcast_ref::<Unparseable>().is_some(), "{err:#}");
+        assert_eq!(fs::read(&path).unwrap(), b"paused = [");
+    }
+
+    /// #92: the first-run write in `load_or_create` takes the same lock and
+    /// looks again, so it can't put the defaults over a change saved while
+    /// it was deciding the file was missing. Bounded rounds, no spinning.
+    #[test]
+    fn first_run_defaults_never_overwrite_an_overlapping_update() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        for round in 0..200 {
+            let _ = fs::remove_file(&path);
+            let barrier = Arc::new(Barrier::new(2));
+            let updater = {
+                let (barrier, path) = (barrier.clone(), path.clone());
+                thread::spawn(move || {
+                    barrier.wait();
+                    Config::update(&path, |c| {
+                        c.paused = true;
+                        Ok(())
+                    })
+                    .unwrap();
+                })
+            };
+            barrier.wait();
+            Config::load_or_create(&path).unwrap();
+            updater.join().unwrap();
+            assert!(
+                Config::load_or_create(&path).unwrap().paused,
+                "round {round}: the defaults overwrote the update"
+            );
+        }
+    }
+
+    #[test]
     fn missing_fields_fall_back_to_defaults() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
