@@ -55,35 +55,55 @@ fn child(path: &str, key: &str) -> String {
     }
 }
 
+/// What a JSON value is, for the failure message.
+fn kind(value: &Value) -> &'static str {
+    match value {
+        Value::Object(_) => "an object",
+        Value::Array(_) => "a list",
+        Value::Null => "null",
+        Value::String(_) => "a string",
+        Value::Bool(_) => "a boolean",
+        Value::Number(_) => "a number",
+    }
+}
+
 /// Appends to `out` every key that `rust` and `fixture` don't share, walking
-/// objects key by key and the first element of arrays. Values are not compared.
+/// objects key by key and the first element of lists. A list or object that
+/// is missing, empty or of another kind on one side is reported too. Scalar
+/// values are not compared.
 fn key_differences(path: &str, rust: &Value, fixture: &Value, out: &mut Vec<String>) {
-    match (rust, fixture) {
-        (Value::Object(rust_map), Value::Object(fixture_map)) => {
-            for key in rust_map.keys().filter(|k| !fixture_map.contains_key(*k)) {
-                out.push(format!(
-                    "`{}` is serialized by Snapshot but missing from ui/tests/fixtures/state.json",
-                    child(path, key)
-                ));
-            }
-            for key in fixture_map.keys().filter(|k| !rust_map.contains_key(*k)) {
-                out.push(format!(
-                    "`{}` is in ui/tests/fixtures/state.json but Snapshot does not serialize it",
-                    child(path, key)
-                ));
-            }
-            for (key, value) in rust_map {
-                if let Some(other) = fixture_map.get(key) {
-                    key_differences(&child(path, key), value, other, out);
-                }
+    if let (Value::Object(rust_map), Value::Object(fixture_map)) = (rust, fixture) {
+        for key in rust_map.keys().filter(|k| !fixture_map.contains_key(*k)) {
+            out.push(format!(
+                "`{}` is serialized by Snapshot but missing from ui/tests/fixtures/state.json",
+                child(path, key)
+            ));
+        }
+        for key in fixture_map.keys().filter(|k| !rust_map.contains_key(*k)) {
+            out.push(format!(
+                "`{}` is in ui/tests/fixtures/state.json but Snapshot does not serialize it",
+                child(path, key)
+            ));
+        }
+        for (key, value) in rust_map {
+            if let Some(other) = fixture_map.get(key) {
+                key_differences(&child(path, key), value, other, out);
             }
         }
-        (Value::Array(rust_items), Value::Array(fixture_items)) => {
-            if let (Some(r), Some(f)) = (rust_items.first(), fixture_items.first()) {
-                key_differences(&format!("{path}[0]"), r, f, out);
-            }
+    } else if let (Value::Array(rust_items), Value::Array(fixture_items)) = (rust, fixture) {
+        match (rust_items.first(), fixture_items.first()) {
+            (Some(r), Some(f)) => key_differences(&format!("{path}[0]"), r, f, out),
+            (Some(_), None) => out.push(format!(
+                "`{path}` is empty in ui/tests/fixtures/state.json, but Snapshot serializes an element"
+            )),
+            _ => {}
         }
-        _ => {}
+    } else if matches!(rust, Value::Object(_) | Value::Array(_)) {
+        out.push(format!(
+            "`{path}` is {} in Snapshot but {} in ui/tests/fixtures/state.json",
+            kind(rust),
+            kind(fixture)
+        ));
     }
 }
 
