@@ -8,6 +8,7 @@ use serde::Deserialize;
 
 use super::{Candidate, Image, SourceId, WALLHAVEN};
 use crate::net::{encode, parse, Call, Http};
+use crate::probe::{Fixture, Keep, Probe, ProbeArgs};
 
 #[derive(Deserialize)]
 struct Page {
@@ -53,6 +54,26 @@ pub fn search_call(http: &Http, query: &str, min_width: u32, min_height: u32) ->
 pub fn parse_search(body: &str) -> Result<Vec<Candidate>> {
     let page: Page = parse(WALLHAVEN.name, body)?;
     Ok(page.data.into_iter().map(candidate).collect())
+}
+
+/// The live check: one search at the size being checked.
+pub fn probe(args: ProbeArgs<'_>) -> Probe<'_> {
+    let (width, height) = args.size;
+    Probe {
+        calls: vec![search_call(args.http, "", width, height)],
+        parse: Box::new(parse_search),
+        report: None,
+    }
+}
+
+/// One search at 1920x1080, as the tests replay it.
+pub fn fixtures(args: ProbeArgs<'_>) -> Vec<Fixture> {
+    vec![Fixture::new(
+        "wallhaven/search.json",
+        vec![search_call(args.http, "", 1920, 1080)],
+        Keep::ListIn("data"),
+        |body| Ok(parse_search(body)?.len()),
+    )]
 }
 
 fn candidate(w: Wallpaper) -> Candidate {

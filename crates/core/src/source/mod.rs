@@ -18,7 +18,9 @@ use image::imageops::FilterType;
 use image::{DynamicImage, ImageReader};
 use serde::{Deserialize, Serialize};
 
+use crate::config::Keys;
 use crate::net::{part_path, Http};
+use crate::probe::{Fixture, Probe, ProbeArgs};
 
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
@@ -72,6 +74,10 @@ pub struct Api {
     pub base: &'static str,
     /// It answers 403, not 429, when its rate limit is used up.
     pub forbidden_is_rate_limit: bool,
+    /// The live check's requests and parser (`live-sources`).
+    pub probe: fn(ProbeArgs<'_>) -> Probe<'_>,
+    /// The replies `record-fixtures` records for the tests.
+    pub fixtures: fn(ProbeArgs<'_>) -> Vec<Fixture>,
 }
 
 /// Everything the app knows about one source, apart from how to ask it for
@@ -101,26 +107,36 @@ pub const UNSPLASH: Api = Api {
     base: "https://api.unsplash.com",
     // Unsplash answers 403 when the hourly limit is used up.
     forbidden_is_rate_limit: true,
+    probe: unsplash::probe,
+    fixtures: unsplash::fixtures,
 };
 pub const PEXELS: Api = Api {
     name: "Pexels",
     base: "https://api.pexels.com",
     forbidden_is_rate_limit: false,
+    probe: pexels::probe,
+    fixtures: pexels::fixtures,
 };
 pub const WALLHAVEN: Api = Api {
     name: "Wallhaven",
     base: "https://wallhaven.cc",
     forbidden_is_rate_limit: false,
+    probe: wallhaven::probe,
+    fixtures: wallhaven::fixtures,
 };
 pub const BING: Api = Api {
     name: "Bing",
     base: "https://www.bing.com",
     forbidden_is_rate_limit: false,
+    probe: daily::bing_probe,
+    fixtures: daily::bing_fixtures,
 };
 pub const WIKIMEDIA: Api = Api {
     name: "Wikimedia",
     base: "https://api.wikimedia.org",
     forbidden_is_rate_limit: false,
+    probe: daily::wikimedia_probe,
+    fixtures: daily::wikimedia_fixtures,
 };
 
 /// One row per source, in [`SourceId::ALL`] order.
@@ -183,6 +199,62 @@ pub const SPECS: [Spec; 5] = [
         credits_a_person: false,
     },
 ];
+
+/// Everything a source may need to make a batch. Each takes what it uses.
+pub struct Request<'a> {
+    pub http: &'a Http,
+    pub keys: &'a Keys,
+    pub query: &'a str,
+    /// Unsplash topics, already resolved to IDs (the worker caches them).
+    pub topic_ids: &'a [String],
+    pub collections: &'a [String],
+    pub username: &'a str,
+    /// The display size, the smallest photo Wallhaven should offer.
+    pub size: (u32, u32),
+    /// Unix seconds, for the picture of the day.
+    pub today: u64,
+    pub favorites_dir: &'a Path,
+    /// The number of result pages Pexels last reported, if known.
+    pub pexels_pages: Option<u64>,
+    /// A random number, to pick a Pexels page.
+    pub random: u64,
+}
+
+/// What one request to a source gave.
+pub struct Batch {
+    pub candidates: Vec<Candidate>,
+    /// The Pexels page count to remember: the request's, or the one a
+    /// Pexels search just reported.
+    pub pexels_pages: Option<u64>,
+}
+
+/// Asks source `id` for a batch of photos.
+pub fn batch(id: SourceId, r: &Request<'_>) -> Result<Batch> {
+    let mut pexels_pages = r.pexels_pages;
+    let candidates = match id {
+        SourceId::Unsplash => unsplash::batch(
+            r.http,
+            &r.keys.unsplash,
+            r.query,
+            r.topic_ids,
+            r.collections,
+            r.username,
+        )?,
+        SourceId::Pexels => {
+            let (photos, pages) =
+                pexels::batch(r.http, &r.keys.pexels, r.query, r.pexels_pages, r.random)?;
+            pexels_pages = Some(pages);
+            photos
+        }
+        SourceId::Wallhaven => wallhaven::batch(r.http, r.query, r.size.0, r.size.1)?,
+        SourceId::Daily => daily::batch(r.http, r.today)?,
+        SourceId::Favorites => favorites::batch(r.favorites_dir)?,
+    };
+    Ok(Batch {
+        candidates,
+        pexels_pages,
+    })
+}
 
 /// `id`'s row in [`SPECS`].
 pub fn spec(id: SourceId) -> &'static Spec {

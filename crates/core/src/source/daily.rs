@@ -13,6 +13,7 @@ use serde::Deserialize;
 
 use super::{Candidate, Image, SourceId, BING, WIKIMEDIA};
 use crate::net::{parse, Call, Http};
+use crate::probe::{Fixture, Keep, Probe, ProbeArgs};
 
 /// Days of Wikimedia history to offer (one request each).
 pub const WIKIMEDIA_DAYS: u64 = 5;
@@ -24,9 +25,8 @@ pub fn batch(http: &Http, today: u64) -> Result<Vec<Candidate>> {
         Ok(mut photos) => out.append(&mut photos),
         Err(e) => errors.push(format!("{e:#}")),
     }
-    for back in 0..WIKIMEDIA_DAYS {
-        let (y, m, d) = civil_date(today.saturating_sub(back * 86_400));
-        match wikimedia(http, y, m, d) {
+    for call in wikimedia_calls(http, today) {
+        match http.send(&call).and_then(|body| parse_wikimedia(&body)) {
             Ok(Some(photo)) => out.push(photo),
             Ok(None) => {}
             Err(e) => errors.push(format!("{e:#}")),
@@ -42,6 +42,27 @@ pub fn batch(http: &Http, today: u64) -> Result<Vec<Candidate>> {
 }
 
 // ---- Bing ----
+
+/// The live check: the archive, as the app asks for it.
+pub fn bing_probe(args: ProbeArgs<'_>) -> Probe<'_> {
+    let base = args.http.base(BING.name);
+    Probe {
+        calls: vec![bing_call(args.http)],
+        parse: Box::new(move |body| parse_bing(base, body)),
+        report: None,
+    }
+}
+
+/// The archive, as the tests replay it.
+pub fn bing_fixtures(args: ProbeArgs<'_>) -> Vec<Fixture> {
+    let base = args.http.base(BING.name).to_string();
+    vec![Fixture::new(
+        "daily/bing.json",
+        vec![bing_call(args.http)],
+        Keep::ListIn("images"),
+        move |body| Ok(parse_bing(&base, body)?.len()),
+    )]
+}
 
 #[derive(Deserialize)]
 struct BingArchive {
@@ -123,6 +144,25 @@ fn bing_candidate(base: &str, img: BingImage) -> Candidate {
 
 // ---- Wikimedia Commons ----
 
+/// The live check: the newest day with a usable picture.
+pub fn wikimedia_probe(args: ProbeArgs<'_>) -> Probe<'_> {
+    Probe {
+        calls: wikimedia_calls(args.http, args.today),
+        parse: Box::new(|body| Ok(parse_wikimedia(body)?.into_iter().collect())),
+        report: None,
+    }
+}
+
+/// The newest day with a usable picture, as the tests replay it.
+pub fn wikimedia_fixtures(args: ProbeArgs<'_>) -> Vec<Fixture> {
+    vec![Fixture::new(
+        "daily/wikimedia.json",
+        wikimedia_calls(args.http, args.today),
+        Keep::Field("image"),
+        |body| Ok(parse_wikimedia(body)?.into_iter().count()),
+    )]
+}
+
 #[derive(Deserialize)]
 struct Featured {
     image: Option<Potd>,
@@ -161,8 +201,14 @@ struct License {
     kind: String,
 }
 
-fn wikimedia(http: &Http, y: i64, m: u32, d: u32) -> Result<Option<Candidate>> {
-    parse_wikimedia(&http.send(&wikimedia_call(http, y, m, d))?)
+/// The days of history the app asks for, newest first.
+pub fn wikimedia_calls(http: &Http, today: u64) -> Vec<Call> {
+    (0..WIKIMEDIA_DAYS)
+        .map(|back| {
+            let (y, m, d) = civil_date(today.saturating_sub(back * 86_400));
+            wikimedia_call(http, y, m, d)
+        })
+        .collect()
 }
 
 pub fn wikimedia_call(http: &Http, y: i64, m: u32, d: u32) -> Call {

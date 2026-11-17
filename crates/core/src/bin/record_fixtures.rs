@@ -2,7 +2,8 @@
 //!
 //!   record-fixtures [--out DIR] [SOURCE...]
 //!
-//! SOURCE is unsplash, pexels, wallhaven, bing or wikimedia (default: all).
+//! SOURCE is an API's name in lower case (unsplash, pexels, wallhaven, bing
+//! or wikimedia; default: all).
 //! Keys come from `UNSPLASH_ACCESS_KEY` and `PEXELS_API_KEY`, else from the
 //! app's saved settings; a keyed source without a key is skipped. Writes to
 //! `crates/core/tests/fixtures/sources/` unless `--out` names a folder.
@@ -14,12 +15,15 @@ use anyhow::{bail, Result};
 use rotator_core::net::Http;
 use rotator_core::paths::Paths;
 use rotator_core::probe::{self, Keys};
+use rotator_core::source;
 
 fn main() -> Result<()> {
     let mut out = PathBuf::from(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/sources"
     ));
+    // Each API by its name in the table of sources, in lower case.
+    let names: Vec<String> = source::apis().map(|a| a.name.to_lowercase()).collect();
     let mut only = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -28,9 +32,10 @@ fn main() -> Result<()> {
                 Some(dir) => out = dir.into(),
                 None => bail!("--out needs a folder"),
             },
-            "unsplash" | "pexels" | "wallhaven" | "bing" | "wikimedia" => only.push(arg),
+            name if names.contains(&arg) => only.push(name.to_string()),
             _ => bail!(
-                "usage: record-fixtures [--out DIR] [unsplash|pexels|wallhaven|bing|wikimedia...]"
+                "usage: record-fixtures [--out DIR] [{}...]",
+                names.join("|")
             ),
         }
     }

@@ -8,7 +8,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use super::names::cache_stem;
 use super::rotation::wallpaper_from;
 use super::Service;
-use crate::source::{daily, favorites, pexels, unsplash, wallhaven, Candidate, SourceId};
+use crate::source::{unsplash, Candidate, SourceId};
 use crate::store::{Set, Wallpaper};
 use crate::wallpaper::Display;
 use crate::{net, now, source};
@@ -211,32 +211,32 @@ impl Service {
 
     /// Asks `source` for a new batch and queues the photos it didn't have.
     fn refill(&mut self, source: SourceId, (width, height): (u32, u32)) -> Result<()> {
-        let query = self.config.query.clone();
-        let batch: Vec<Candidate> = match source {
-            SourceId::Unsplash => {
-                let key = self.keys().unsplash;
-                let topics = self.topic_ids(&key)?;
-                unsplash::batch(
-                    &self.http,
-                    &key,
-                    &query,
-                    &topics,
-                    &self.config.collections,
-                    &self.config.username,
-                )?
-            }
-            SourceId::Pexels => {
-                let key = self.keys().pexels;
-                let random = self.random();
-                let (batch, pages) =
-                    pexels::batch(&self.http, &key, &query, self.state.pexels_pages, random)?;
-                self.state.pexels_pages = Some(pages);
-                batch
-            }
-            SourceId::Wallhaven => wallhaven::batch(&self.http, &query, width, height)?,
-            SourceId::Daily => daily::batch(&self.http, now())?,
-            SourceId::Favorites => favorites::batch(&self.favorites_dir())?,
+        let keys = self.keys();
+        // Unsplash topics resolve once and are cached in the state.
+        let topic_ids = match source {
+            SourceId::Unsplash => self.topic_ids(&keys.unsplash)?,
+            _ => Vec::new(),
         };
+        let random = self.random();
+        let favorites_dir = self.favorites_dir();
+        let request = source::Request {
+            http: &self.http,
+            keys: &keys,
+            query: &self.config.query,
+            topic_ids: &topic_ids,
+            collections: &self.config.collections,
+            username: &self.config.username,
+            size: (width, height),
+            today: now(),
+            favorites_dir: &favorites_dir,
+            pexels_pages: self.state.pexels_pages,
+            random,
+        };
+        let source::Batch {
+            candidates: batch,
+            pexels_pages,
+        } = source::batch(source, &request)?;
+        self.state.pexels_pages = pexels_pages;
         let mut fresh: Vec<Candidate> = {
             let queued: HashSet<&str> = self
                 .state

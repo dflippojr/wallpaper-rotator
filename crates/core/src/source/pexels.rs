@@ -7,6 +7,7 @@ use serde::Deserialize;
 
 use super::{Candidate, Image, SourceId, PEXELS};
 use crate::net::{append_query, encode, parse, Call, Http};
+use crate::probe::{Fixture, Keep, Probe, ProbeArgs};
 
 pub const BATCH: u32 = 40;
 /// Pexels serves search results this deep at most.
@@ -83,6 +84,32 @@ pub fn parse_batch(body: &str) -> Result<(Vec<Candidate>, u64)> {
         .map(candidate)
         .collect();
     Ok((photos, pages))
+}
+
+/// The live check: one page of curated photos.
+pub fn probe(args: ProbeArgs<'_>) -> Probe<'_> {
+    Probe {
+        calls: vec![batch_call(args.http, args.key, "", 1)],
+        parse: Box::new(|body| Ok(parse_batch(body)?.0)),
+        report: None,
+    }
+}
+
+/// Curated photos and a search, as the tests replay them.
+pub fn fixtures(args: ProbeArgs<'_>) -> Vec<Fixture> {
+    let ProbeArgs { http, key, .. } = args;
+    let photos = |path, query| {
+        Fixture::new(
+            path,
+            vec![batch_call(http, key, query, 1)],
+            Keep::ListIn("photos"),
+            |body| Ok(parse_batch(body)?.0.len()),
+        )
+    };
+    vec![
+        photos("pexels/curated.json", ""),
+        photos("pexels/search.json", "mountains"),
+    ]
 }
 
 fn candidate(photo: Photo) -> Candidate {

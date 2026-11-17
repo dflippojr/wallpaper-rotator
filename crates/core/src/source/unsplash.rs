@@ -7,6 +7,7 @@ use serde::Deserialize;
 
 use super::{Candidate, Image, SourceId, UNSPLASH};
 use crate::net::{append_query, encode, parse, Call, Http};
+use crate::probe::{Fixture, Keep, Probe, ProbeArgs};
 
 /// Appended to Unsplash links, as the API guidelines ask.
 pub const UTM: &str = "utm_source=wallpaper_rotator&utm_medium=referral";
@@ -293,6 +294,42 @@ pub fn track(http: &Http, key: &str, url: &str) -> Result<()> {
 /// The download report for a photo's `download_location`.
 pub fn track_call(key: &str, url: &str) -> Call {
     call(key, url.to_string())
+}
+
+/// The live check: one batch of random photos, then the download report
+/// for the photo it fetched.
+pub fn probe(args: ProbeArgs<'_>) -> Probe<'_> {
+    let key = args.key;
+    Probe {
+        calls: vec![batch_call(args.http, key, "", &[], &[], "")],
+        parse: Box::new(parse_batch),
+        report: Some(Box::new(move |url| track_call(key, url))),
+    }
+}
+
+/// Random photos, a search and a topic, as the tests replay them. The
+/// download report is recorded from the random list (see
+/// [`crate::probe::record_sources`]).
+pub fn fixtures(args: ProbeArgs<'_>) -> Vec<Fixture> {
+    let ProbeArgs { http, key, .. } = args;
+    let photos = |path, query| {
+        Fixture::new(
+            path,
+            vec![batch_call(http, key, query, &[], &[], "")],
+            Keep::List,
+            |body| Ok(parse_batch(body)?.len()),
+        )
+    };
+    vec![
+        photos("unsplash/random.json", ""),
+        photos("unsplash/search.json", "mountains"),
+        Fixture::new(
+            "unsplash/topic.json",
+            vec![topic_call(http, key, "wallpapers")],
+            Keep::All,
+            |body| parse_topic(body).map(|_| 1),
+        ),
+    ]
 }
 
 fn candidate(photo: Photo) -> Candidate {
