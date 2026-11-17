@@ -20,7 +20,7 @@ use tauri::menu::CheckMenuItem;
 use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt as _};
 
-use popover::{hide_popover, show_popover, PopoverLife, POPOVER};
+use popover::{hide_popover, popover_blurred, show_popover, PopoverLife, POPOVER};
 use tray::{build_tray, refresh_tray};
 
 struct AppState {
@@ -246,10 +246,7 @@ fn main() {
             // Behave like a popover: hide when focus moves elsewhere.
             WindowEvent::Focused(false) => {
                 if window.is_visible().unwrap_or(false) {
-                    let log_file = &window.state::<AppState>().paths.log_file;
-                    log::write(log_file, &focus::blur_message(focus::taker().as_deref()));
-                    hide_popover(window.app_handle());
-                    *window.state::<AppState>().last_hidden.lock().unwrap() = Some(Instant::now());
+                    popover_blurred(window.app_handle());
                 }
             }
             WindowEvent::CloseRequested { api, .. } => {
