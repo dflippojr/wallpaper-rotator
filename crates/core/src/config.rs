@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -68,19 +69,44 @@ impl Config {
     /// Loads the config, writing the defaults on first run. A file that exists
     /// but can't be parsed is an [`Unparseable`] error and stays as it is.
     pub fn load_or_create(path: &Path) -> Result<Self> {
+        if let Some(config) = Self::read(path)? {
+            return Ok(config);
+        }
+        let _writing = write_lock();
+        // Another thread may have written the file since the read above.
+        if let Some(config) = Self::read(path)? {
+            return Ok(config);
+        }
+        let config = Self::default();
+        config.save(path)?;
+        Ok(config)
+    }
+
+    /// Loads the config (the defaults if there is no file), applies `change`
+    /// and saves the result, all under one process-wide lock (#92). Every
+    /// write of `config.toml` goes through here or `load_or_create`, so the
+    /// settings screen and the worker's Pause can't each write back a copy
+    /// that is missing the other's change. Nothing is written if `change`
+    /// fails or the file can't be parsed.
+    pub fn update(path: &Path, change: impl FnOnce(&mut Self) -> Result<()>) -> Result<Self> {
+        let _writing = write_lock();
+        let mut config = Self::read(path)?.unwrap_or_default();
+        change(&mut config)?;
+        config.save(path)?;
+        Ok(config)
+    }
+
+    /// The saved config, or `None` if there is no file.
+    fn read(path: &Path) -> Result<Option<Self>> {
         match fs::read(path) {
-            Ok(bytes) => Self::parse(&bytes).map_err(|problem| {
+            Ok(bytes) => Self::parse(&bytes).map(Some).map_err(|problem| {
                 Unparseable {
                     path: path.to_path_buf(),
                     problem,
                 }
                 .into()
             }),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                let config = Self::default();
-                config.save(path)?;
-                Ok(config)
-            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e).with_context(|| format!("could not read {}", path.display())),
         }
     }
@@ -130,6 +156,14 @@ impl Config {
             && self.per_display == other.per_display
             && self.sources == other.sources
     }
+}
+
+/// Held while a thread reads, changes and writes `config.toml`. It guards no
+/// data, so a thread that panicked while holding it leaves nothing broken:
+/// the poison is ignored rather than failing every later save.
+fn write_lock() -> MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// The config file exists but doesn't hold valid settings. Only a hand edit

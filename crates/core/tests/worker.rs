@@ -770,9 +770,7 @@ fn no_command_overwrites_settings_saved_while_it_was_queued() {
 /// What `save_settings` (app/src/commands.rs) does on the Tauri command
 /// thread when the user presses Save.
 fn save_settings(path: &Path, settings: &Settings) {
-    let mut config = Config::load_or_create(path).unwrap();
-    settings.apply_to(&mut config, None, None).unwrap();
-    config.save(path).unwrap();
+    Config::update(path, |config| settings.apply_to(config, None, None)).unwrap();
 }
 
 /// #92: Save runs on the Tauri command thread while the worker handles the
