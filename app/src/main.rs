@@ -419,17 +419,14 @@ fn show_popover(app: &AppHandle, near: Option<&Rect>) {
     // A second launch can arrive before setup has registered the state (the
     // single-instance listener runs on its own); show once it has.
     let Some(state) = app.try_state::<AppState>() else {
-        let app = app.clone();
+        let (probe, app) = (app.clone(), app.clone());
         let near = near.cloned();
-        std::thread::spawn(move || {
-            for _ in 0..100 {
-                std::thread::sleep(Duration::from_millis(100));
-                if app.try_state::<AppState>().is_some() {
-                    show_popover(&app, near.as_ref());
-                    return;
-                }
-            }
-        });
+        when_ready(
+            move || probe.try_state::<AppState>().is_some(),
+            move || show_popover(&app, near.as_ref()),
+            Duration::from_millis(100),
+            100,
+        );
         return;
     };
     let ticket = state.popover.shown();
@@ -439,20 +436,41 @@ fn show_popover(app: &AppHandle, near: Option<&Rect>) {
         let Some(window) = popover(&app) else {
             return;
         };
-        let _ = match near {
-            Some(rect) => place_near(&window, &rect),
-            None => window.center(),
-        };
         let main = app.clone();
         let _ = app.run_on_main_thread(move || {
+            // A stale show neither moves nor shows the window.
             if !main.state::<AppState>().popover.may_show(ticket) {
                 return;
             }
+            let _ = match near {
+                Some(rect) => place_near(&window, &rect),
+                None => window.center(),
+            };
             let _ = window.show();
             let _ = window.set_focus();
             let _ = window.emit("popover-shown", ());
         });
     });
+}
+
+/// On a new thread, checks `ready` every `interval`, up to `tries` times, and
+/// runs `then` once it holds. The handle says whether `then` ran.
+fn when_ready(
+    ready: impl Fn() -> bool + Send + 'static,
+    then: impl FnOnce() + Send + 'static,
+    interval: Duration,
+    tries: u32,
+) -> std::thread::JoinHandle<bool> {
+    std::thread::spawn(move || {
+        for _ in 0..tries {
+            std::thread::sleep(interval);
+            if ready() {
+                then();
+                return true;
+            }
+        }
+        false
+    })
 }
 
 fn toggle_popover(app: &AppHandle, near: &Rect) {
@@ -852,6 +870,43 @@ mod tests {
         life.shown();
         assert!(!life.begin_destroy(ticket, false));
         assert!(life.wait_until_gone(Duration::ZERO), "nothing to wait for");
+    }
+
+    #[test]
+    fn a_show_before_setup_runs_once_setup_is_done() {
+        use std::sync::atomic::{AtomicBool, AtomicU32};
+        let registered = Arc::new(AtomicBool::new(false));
+        let shows = Arc::new(AtomicU32::new(0));
+        let waiting = {
+            let (registered, shows) = (registered.clone(), shows.clone());
+            when_ready(
+                move || registered.load(Ordering::SeqCst),
+                move || {
+                    shows.fetch_add(1, Ordering::SeqCst);
+                },
+                Duration::from_millis(5),
+                2000,
+            )
+        };
+        std::thread::sleep(Duration::from_millis(30));
+        assert_eq!(shows.load(Ordering::SeqCst), 0, "not before setup");
+        registered.store(true, Ordering::SeqCst);
+        assert!(waiting.join().unwrap());
+        assert_eq!(shows.load(Ordering::SeqCst), 1, "exactly once after");
+    }
+
+    #[test]
+    fn a_show_before_setup_gives_up_if_setup_never_finishes() {
+        let ran = Arc::new(Mutex::new(false));
+        let flag = ran.clone();
+        let waiting = when_ready(
+            || false,
+            move || *flag.lock().unwrap() = true,
+            Duration::from_millis(1),
+            5,
+        );
+        assert!(!waiting.join().unwrap());
+        assert!(!*ran.lock().unwrap());
     }
 
     #[test]
