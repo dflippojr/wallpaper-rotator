@@ -44,25 +44,180 @@ impl SourceId {
     ];
 
     pub fn name(self) -> &'static str {
-        match self {
-            SourceId::Unsplash => "Unsplash",
-            SourceId::Pexels => "Pexels",
-            SourceId::Wallhaven => "Wallhaven",
-            SourceId::Daily => "Photo of the day",
-            SourceId::Favorites => "Favorites",
-        }
+        spec(self).name
     }
 
     /// Used in favorite file names, so a saved photo's credit can be rebuilt.
     pub fn key(self) -> &'static str {
-        match self {
-            SourceId::Unsplash => "unsplash",
-            SourceId::Pexels => "pexels",
-            SourceId::Wallhaven => "wallhaven",
-            SourceId::Daily => "daily",
-            SourceId::Favorites => "favorites",
-        }
+        spec(self).slug
     }
+}
+
+// ---- The table of sources ----
+
+/// Which saved key a source needs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyKind {
+    Unsplash,
+    Pexels,
+}
+
+/// One API a source calls. Errors, the fixture recorder and the live check
+/// name it by `name`.
+#[derive(Debug)]
+pub struct Api {
+    pub name: &'static str,
+    /// Where it lives, without a trailing slash. A test can send it
+    /// elsewhere with [`Http::with_bases`].
+    pub base: &'static str,
+    /// It answers 403, not 429, when its rate limit is used up.
+    pub forbidden_is_rate_limit: bool,
+}
+
+/// Everything the app knows about one source, apart from how to ask it for
+/// photos (see [`batch`]).
+#[derive(Debug)]
+pub struct Spec {
+    pub id: SourceId,
+    /// Shown in Settings and in credits.
+    pub name: &'static str,
+    /// Used in favorite file names; the same as the config's spelling.
+    pub slug: &'static str,
+    /// The key it needs, if any.
+    pub key: Option<KeyKind>,
+    /// The APIs it calls (the picture of the day has two).
+    pub apis: &'static [Api],
+    /// Photo and credit links the app may open in the browser.
+    pub link_prefixes: &'static [&'static str],
+    /// Origins its popover previews load from. The CSP's `img-src` in
+    /// `app/tauri.conf.json` must list exactly these, which a test checks.
+    pub preview_hosts: &'static [&'static str],
+    /// Its credit names a photographer, not the site or a file.
+    pub credits_a_person: bool,
+}
+
+pub const UNSPLASH: Api = Api {
+    name: "Unsplash",
+    base: "https://api.unsplash.com",
+    // Unsplash answers 403 when the hourly limit is used up.
+    forbidden_is_rate_limit: true,
+};
+pub const PEXELS: Api = Api {
+    name: "Pexels",
+    base: "https://api.pexels.com",
+    forbidden_is_rate_limit: false,
+};
+pub const WALLHAVEN: Api = Api {
+    name: "Wallhaven",
+    base: "https://wallhaven.cc",
+    forbidden_is_rate_limit: false,
+};
+pub const BING: Api = Api {
+    name: "Bing",
+    base: "https://www.bing.com",
+    forbidden_is_rate_limit: false,
+};
+pub const WIKIMEDIA: Api = Api {
+    name: "Wikimedia",
+    base: "https://api.wikimedia.org",
+    forbidden_is_rate_limit: false,
+};
+
+/// One row per source, in [`SourceId::ALL`] order.
+pub const SPECS: [Spec; 5] = [
+    Spec {
+        id: SourceId::Unsplash,
+        name: UNSPLASH.name,
+        slug: "unsplash",
+        key: Some(KeyKind::Unsplash),
+        apis: &[UNSPLASH],
+        link_prefixes: &["https://unsplash.com/", "https://www.unsplash.com/"],
+        preview_hosts: &["https://images.unsplash.com", "https://plus.unsplash.com"],
+        credits_a_person: true,
+    },
+    Spec {
+        id: SourceId::Pexels,
+        name: PEXELS.name,
+        slug: "pexels",
+        key: Some(KeyKind::Pexels),
+        apis: &[PEXELS],
+        link_prefixes: &["https://www.pexels.com/"],
+        preview_hosts: &["https://images.pexels.com"],
+        credits_a_person: true,
+    },
+    Spec {
+        id: SourceId::Wallhaven,
+        name: WALLHAVEN.name,
+        slug: "wallhaven",
+        key: None,
+        apis: &[WALLHAVEN],
+        link_prefixes: &["https://wallhaven.cc/"],
+        preview_hosts: &["https://th.wallhaven.cc"],
+        // Search results don't name the uploader.
+        credits_a_person: false,
+    },
+    Spec {
+        id: SourceId::Daily,
+        name: "Photo of the day",
+        slug: "daily",
+        key: None,
+        apis: &[BING, WIKIMEDIA],
+        link_prefixes: &["https://www.bing.com/", "https://commons.wikimedia.org/"],
+        preview_hosts: &[
+            "https://www.bing.com",
+            "https://thumb.wikimedia.org",
+            "https://upload.wikimedia.org",
+        ],
+        credits_a_person: true,
+    },
+    Spec {
+        id: SourceId::Favorites,
+        name: "Favorites",
+        slug: "favorites",
+        key: None,
+        apis: &[],
+        link_prefixes: &[],
+        // Previews are the cached files, which the CSP allows as `asset:`.
+        preview_hosts: &[],
+        // The credit comes from the file name.
+        credits_a_person: false,
+    },
+];
+
+/// `id`'s row in [`SPECS`].
+pub fn spec(id: SourceId) -> &'static Spec {
+    // SPECS is in SourceId::ALL order, which a test checks.
+    &SPECS[id as usize]
+}
+
+/// Every source's APIs, in table order.
+pub fn apis() -> impl Iterator<Item = &'static Api> {
+    SPECS.iter().flat_map(|s| s.apis)
+}
+
+/// The API called `name`.
+pub fn api(name: &str) -> Option<&'static Api> {
+    apis().find(|a| a.name == name)
+}
+
+/// True for a photo or credit link on one of the sources' sites: the only
+/// links the popover may open.
+pub fn is_source_link(url: &str) -> bool {
+    SPECS
+        .iter()
+        .flat_map(|s| s.link_prefixes)
+        .any(|prefix| url.starts_with(prefix))
+}
+
+/// Whether a credit for `provider` (a [`WallpaperView`]'s `source`, such as
+/// "Unsplash" or "Bing") names a person. Only the sources that never do
+/// say no.
+///
+/// [`WallpaperView`]: crate::service::WallpaperView
+pub fn credits_a_person(provider: &str) -> bool {
+    !SPECS
+        .iter()
+        .any(|s| s.name == provider && !s.credits_a_person)
 }
 
 /// How to get a candidate's image at a given size.
@@ -254,6 +409,66 @@ pub(crate) mod tests {
             image,
             track_url: None,
         }
+    }
+
+    #[test]
+    fn the_table_has_one_row_per_source_in_order() {
+        assert_eq!(SPECS.map(|s| s.id), SourceId::ALL);
+        for id in SourceId::ALL {
+            assert_eq!(spec(id).id, id);
+            // The file-name key is the config's spelling.
+            let config = serde_json::to_value(id).unwrap();
+            assert_eq!(config.as_str(), Some(id.key()));
+        }
+    }
+
+    #[test]
+    fn api_names_are_unique_and_found_by_name() {
+        let names: Vec<&str> = apis().map(|a| a.name).collect();
+        let mut unique = names.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), names.len(), "{names:?}");
+        for name in names {
+            assert_eq!(api(name).map(|a| a.name), Some(name));
+        }
+        assert!(api("Photo of the day").is_none());
+        assert!(apis().all(|a| a.base.starts_with("https://") && !a.base.ends_with('/')));
+    }
+
+    #[test]
+    fn links_and_previews_are_https_origins() {
+        for s in &SPECS {
+            for prefix in s.link_prefixes {
+                // A trailing slash, so "https://unsplash.com.evil" is refused.
+                assert!(prefix.starts_with("https://") && prefix.ends_with('/'));
+            }
+            for host in s.preview_hosts {
+                assert!(host.starts_with("https://"));
+                assert_eq!(host.matches('/').count(), 2, "{host} is an origin");
+            }
+        }
+    }
+
+    #[test]
+    fn only_source_sites_can_be_opened() {
+        assert!(is_source_link("https://unsplash.com/photos/x?utm_source=a"));
+        assert!(is_source_link(
+            "https://commons.wikimedia.org/wiki/File:A.jpg"
+        ));
+        assert!(!is_source_link("https://unsplash.com.example.com/"));
+        assert!(!is_source_link("http://unsplash.com/photos/x"));
+        assert!(!is_source_link("https://example.com/"));
+        assert!(!is_source_link("file:///etc/passwd"));
+    }
+
+    #[test]
+    fn credits_name_a_person_except_for_wallhaven_and_favorites() {
+        for provider in ["Unsplash", "Pexels", "Bing", "Wikimedia Commons"] {
+            assert!(credits_a_person(provider), "{provider}");
+        }
+        assert!(!credits_a_person(SourceId::Wallhaven.name()));
+        assert!(!credits_a_person(SourceId::Favorites.name()));
     }
 
     #[test]

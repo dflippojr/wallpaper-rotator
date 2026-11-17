@@ -43,11 +43,7 @@ fn coverage(photo: (u32, u32), size: (u32, u32)) -> f64 {
 impl Service {
     /// Whether a source can be asked at all (it has the key it needs).
     fn usable(&self, source: SourceId) -> bool {
-        match source {
-            SourceId::Unsplash => !self.keys().unsplash.is_empty(),
-            SourceId::Pexels => !self.keys().pexels.is_empty(),
-            SourceId::Wallhaven | SourceId::Daily | SourceId::Favorites => true,
-        }
+        self.keys().allow(source)
     }
 
     pub(super) fn can_fetch(&self) -> bool {

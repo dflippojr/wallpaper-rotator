@@ -11,7 +11,7 @@ use serde_json::Value;
 
 use crate::config::Config;
 use crate::net::{key_forms, scrub, Call, Http};
-use crate::source::{daily, image_url, pexels, unsplash, wallhaven, Candidate};
+use crate::source::{daily, image_url, pexels, unsplash, wallhaven, Candidate, SPECS};
 
 pub use crate::config::Keys;
 
@@ -37,14 +37,6 @@ impl Keys {
             .and_then(|text| toml::from_str::<Config>(&text).ok())
             .unwrap_or_default();
         saved.keys(true)
-    }
-
-    fn for_source(&self, source: &str) -> Option<&str> {
-        match source {
-            "Unsplash" => Some(&self.unsplash),
-            "Pexels" => Some(&self.pexels),
-            _ => None,
-        }
     }
 
     fn all(&self) -> impl Iterator<Item = &str> {
@@ -387,10 +379,11 @@ impl Outcome {
 /// called. `today` is Unix seconds, for the picture of the day. No key
 /// appears in the results.
 pub fn live(http: &Http, keys: &Keys, (width, height): (u32, u32), today: u64) -> Vec<Check> {
-    SOURCES
+    SPECS
         .iter()
-        .map(|&source| {
-            let outcome = match keys.for_source(source) {
+        .flat_map(|spec| spec.apis.iter().map(move |api| (spec, api.name)))
+        .map(|(spec, source)| {
+            let outcome = match spec.key.map(|kind| keys.get(kind)) {
                 Some("") => Outcome::NotVerified("no key"),
                 key => match check(http, source, key.unwrap_or_default(), width, height, today) {
                     Ok(passed) => passed,

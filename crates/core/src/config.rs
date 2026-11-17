@@ -5,7 +5,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::source::SourceId;
+use crate::source::{spec, KeyKind, SourceId};
 
 /// The smallest image cache, in megabytes. `ui/app.js` and `ui/index.html`
 /// repeat it for the settings form, which can't import it.
@@ -196,6 +196,23 @@ impl std::error::Error for Unparseable {}
 pub struct Keys {
     pub unsplash: String,
     pub pexels: String,
+}
+
+impl Keys {
+    /// The key of this kind; empty when not set.
+    pub fn get(&self, kind: KeyKind) -> &str {
+        match kind {
+            KeyKind::Unsplash => &self.unsplash,
+            KeyKind::Pexels => &self.pexels,
+        }
+    }
+
+    /// Whether `source` has the key it needs, if it needs one.
+    pub fn allow(&self, source: SourceId) -> bool {
+        spec(source)
+            .key
+            .is_none_or(|kind| !self.get(kind).is_empty())
+    }
 }
 
 fn env_or(var: &str, env: bool, fallback: &str) -> String {
