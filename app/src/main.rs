@@ -7,7 +7,7 @@ mod automation;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use rotator_core::config::Config;
@@ -63,11 +63,17 @@ fn popover_grace() -> Duration {
 /// every older ticket stale. A show commits only with the newest ticket, so a
 /// slow show can't undo a later hide; a destroy goes ahead only for the most
 /// recent hide, with no show since.
+///
+/// Tauri destroys a window asynchronously, so between a destroy and the
+/// window's `Destroyed` event the popover is "dying": still found by label,
+/// but about to go. `popover` waits that out instead of reusing it.
 #[derive(Default)]
 struct PopoverLife {
     generation: AtomicU64,
     /// Held while the window is looked up and, if missing, built.
     building: Mutex<()>,
+    dying: Mutex<bool>,
+    gone: Condvar,
 }
 
 impl PopoverLife {
@@ -91,6 +97,32 @@ impl PopoverLife {
     /// Whether the destroy scheduled with `ticket` should still go ahead.
     fn may_destroy(&self, ticket: u64, visible: bool) -> bool {
         !visible && self.generation.load(Ordering::SeqCst) == ticket
+    }
+
+    /// Like `may_destroy`, and when it may, marks the popover dying in the
+    /// same step, so a show that comes in afterwards waits for the window to
+    /// go rather than reusing it.
+    fn begin_destroy(&self, ticket: u64, visible: bool) -> bool {
+        let mut dying = self.dying.lock().unwrap();
+        let go = self.may_destroy(ticket, visible);
+        *dying |= go;
+        go
+    }
+
+    /// The window is gone (its `Destroyed` event), or its destroy failed.
+    fn destroyed(&self) {
+        *self.dying.lock().unwrap() = false;
+        self.gone.notify_all();
+    }
+
+    /// Waits up to `limit` for a dying popover to be gone. False on timeout.
+    fn wait_until_gone(&self, limit: Duration) -> bool {
+        let dying = self.dying.lock().unwrap();
+        let (dying, _) = self
+            .gone
+            .wait_timeout_while(dying, limit, |dying| *dying)
+            .unwrap();
+        !*dying
     }
 }
 
@@ -300,6 +332,10 @@ fn popover(app: &AppHandle) -> Option<WebviewWindow> {
     // Two quick shows must not both build the window.
     let state = app.state::<AppState>();
     let _building = state.popover.building.lock().unwrap();
+    if !state.popover.wait_until_gone(Duration::from_secs(5)) {
+        log::write(&state.paths.log_file, "popover webview still closing");
+        return None;
+    }
     if let Some(window) = app.get_webview_window(POPOVER) {
         return Some(window);
     }
@@ -367,8 +403,8 @@ fn hide_popover(app: &AppHandle) {
             };
             let visible = window.is_visible().unwrap_or(true);
             let state = main.state::<AppState>();
-            if state.popover.may_destroy(ticket, visible) && window.destroy().is_ok() {
-                log::write(&state.paths.log_file, "popover webview destroyed");
+            if state.popover.begin_destroy(ticket, visible) && window.destroy().is_err() {
+                state.popover.destroyed();
             }
         });
     });
@@ -380,7 +416,23 @@ fn hide_popover(app: &AppHandle) {
 /// goes back to the main thread and happens only if no later show or hide
 /// came in meanwhile.
 fn show_popover(app: &AppHandle, near: Option<&Rect>) {
-    let ticket = app.state::<AppState>().popover.shown();
+    // A second launch can arrive before setup has registered the state (the
+    // single-instance listener runs on its own); show once it has.
+    let Some(state) = app.try_state::<AppState>() else {
+        let app = app.clone();
+        let near = near.cloned();
+        std::thread::spawn(move || {
+            for _ in 0..100 {
+                std::thread::sleep(Duration::from_millis(100));
+                if app.try_state::<AppState>().is_some() {
+                    show_popover(&app, near.as_ref());
+                    return;
+                }
+            }
+        });
+        return;
+    };
+    let ticket = state.popover.shown();
     let app = app.clone();
     let near = near.cloned();
     std::thread::spawn(move || {
@@ -683,15 +735,25 @@ fn main() {
         })
         .build(context)
         .expect("error while building Wallpaper Rotator")
-        .run(|_app, event| {
+        .run(|app, event| match event {
             // Destroying the popover, the only window, must not quit the
             // tray app; it lives on in the tray until Quit.
-            if let tauri::RunEvent::ExitRequested {
+            tauri::RunEvent::ExitRequested {
                 code: None, api, ..
-            } = event
-            {
-                api.prevent_exit();
+            } => api.prevent_exit(),
+            // Tauri has dropped the window by the time this runs, so a
+            // waiting show can build a new one.
+            tauri::RunEvent::WindowEvent {
+                label,
+                event: WindowEvent::Destroyed,
+                ..
+            } if label == POPOVER => {
+                if let Some(state) = app.try_state::<AppState>() {
+                    state.popover.destroyed();
+                    log::write(&state.paths.log_file, "popover webview destroyed");
+                }
             }
+            _ => {}
         });
 }
 
@@ -763,6 +825,33 @@ mod tests {
         if std::env::var_os("WALLPAPER_ROTATOR_POPOVER_GRACE_MS").is_none() {
             assert_eq!(popover_grace(), POPOVER_GRACE);
         }
+    }
+
+    #[test]
+    fn a_show_after_a_destroy_waits_for_the_window_to_go() {
+        let life = Arc::new(PopoverLife::default());
+        let ticket = life.hidden();
+        assert!(life.begin_destroy(ticket, false));
+        life.shown();
+        assert!(
+            !life.wait_until_gone(Duration::from_millis(50)),
+            "still dying"
+        );
+        let waiter = {
+            let life = life.clone();
+            std::thread::spawn(move || life.wait_until_gone(Duration::from_secs(10)))
+        };
+        life.destroyed();
+        assert!(waiter.join().unwrap(), "released by the Destroyed event");
+    }
+
+    #[test]
+    fn a_stale_destroy_does_not_mark_the_popover_dying() {
+        let life = PopoverLife::default();
+        let ticket = life.hidden();
+        life.shown();
+        assert!(!life.begin_destroy(ticket, false));
+        assert!(life.wait_until_gone(Duration::ZERO), "nothing to wait for");
     }
 
     #[test]
