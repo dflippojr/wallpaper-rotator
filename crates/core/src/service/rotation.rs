@@ -335,8 +335,13 @@ impl Service {
 
 #[cfg(test)]
 mod tests {
+    // The only test here is Linux-only, so these imports are too; elsewhere
+    // they would be unused and fail `clippy -D warnings`.
+    #[cfg(target_os = "linux")]
     use super::*;
+    #[cfg(target_os = "linux")]
     use crate::service::test_support::{photo, screen, service};
+    #[cfg(target_os = "linux")]
     use crate::source::tests::png;
 
     /// The prefetch can stitch a set in the same second as the one on screen,
