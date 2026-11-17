@@ -267,7 +267,7 @@ fn save_settings_arguments_match_the_command() {
     taken.sort();
     assert_eq!(
         sent, ["accessKey", "pexelsKey", "settings"],
-        "ui/app.js sends these keys to save_settings; update the test with the command if the command changed"
+        "ui/app.js sends {sent:?} to save_settings, but the contract is [accessKey, pexelsKey, settings]; match app/src/commands.rs, or change the command and this list together"
     );
     assert_eq!(
         taken, sent_as_params,
