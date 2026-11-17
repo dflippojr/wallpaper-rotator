@@ -118,7 +118,11 @@ test('real popover Refresh changes the photo through Tauri and the worker', { ti
     '',
   ].join('\n'));
   // The driver, native WebDriver and real app inherit this same isolated root.
-  const env = { ...process.env, WALLPAPER_ROTATOR_HOME: home, UNSPLASH_ACCESS_KEY: '', PEXELS_API_KEY: '' };
+  // A hidden popover's webview is destroyed after 3 s instead of 30 s (debug builds only).
+  const env = {
+    ...process.env, WALLPAPER_ROTATOR_HOME: home, UNSPLASH_ACCESS_KEY: '', PEXELS_API_KEY: '',
+    WALLPAPER_ROTATOR_POPOVER_GRACE_MS: '3000',
+  };
   const driverArgs = ['--port', '4444', '--native-port', '4445'];
   if (process.env.NATIVE_WEBDRIVER) driverArgs.push('--native-driver', process.env.NATIVE_WEBDRIVER);
   let driverLog = '';
@@ -189,6 +193,35 @@ test('real popover Refresh changes the photo through Tauri and the worker', { ti
     await writeFile(path.join(output, 'popover.png'), await browser.takeScreenshot(), 'base64');
     console.log('Refresh changed ' + before.current[0].id + ' -> ' + after.current[0].id);
     console.log('Independent OS read-back verified before and after Refresh.');
+
+    // Issue #42: the popover's webview exists only while it is shown. Hide it,
+    // wait for the app to destroy it, then show it again with a second launch.
+    // The single-instance hand-over runs show_popover from an event handler,
+    // where building a webview directly deadlocks on Windows.
+    const popoverLog = async () => (await readFile(path.join(home, 'rotator.log'), 'utf8'))
+      .split('\n').map(line => line.replace(/^\d+ /, '')).filter(line => line.startsWith('popover webview'));
+    const counts = async () => {
+      const entries = await popoverLog();
+      const count = word => entries.filter(entry => entry === 'popover webview ' + word).length;
+      return { created: count('created'), loaded: count('loaded'), destroyed: count('destroyed') };
+    };
+    const opened = await counts();
+    assert.equal(opened.created, 1, 'one webview, built for the launch argument: ' + JSON.stringify(opened));
+    assert.equal(opened.destroyed, 0, 'not destroyed while shown: ' + JSON.stringify(opened));
+    assert.ok(opened.loaded >= 1, 'its page loaded: ' + JSON.stringify(opened));
+    await browser.executeScript('window.__TAURI__.core.invoke("hide_window");');
+    await waitFor(async () => (await counts()).destroyed === 1, 'the hidden popover webview to be destroyed', 20000);
+    // A second launch hands over to the running app and exits.
+    await exec(app, [], { env, timeout: 20000, windowsHide: true });
+    const reopened = await waitFor(async () => {
+      const now = await counts();
+      return now.created === 2 && now.loaded > opened.loaded && now;
+    }, 'a new popover webview to load on re-open', 30000);
+    assert.equal(reopened.destroyed, 1, 'the re-opened popover stays: ' + JSON.stringify(reopened));
+    await writeFile(path.join(output, 'popover-lifecycle.json'), JSON.stringify(await popoverLog(), null, 2));
+    const reopenedLog = await readFile(path.join(home, 'rotator.log'), 'utf8');
+    assert.doesNotMatch(reopenedLog, /\berror\b|could not|failed/i, 'app log has no errors after re-open');
+    console.log('Popover webview destroyed after hiding and rebuilt on re-open.');
     console.log('Isolated home retained at ' + home);
   } finally {
     try {
@@ -204,7 +237,14 @@ test('real popover Refresh changes the photo through Tauri and the worker', { ti
         if (browser) {
           // Exit the tray explicitly; closing its window only hides it. The
           // session may disappear as quit runs, so teardown also stops the tree.
-          await browser.executeScript('window.__TAURI__.core.invoke("quit");').catch(() => {});
+          const quit = 'window.__TAURI__.core.invoke("quit");';
+          await browser.executeScript(quit).catch(async () => {
+            // After the re-open the session's first webview is gone; try the new one.
+            const handles = await browser.getAllWindowHandles().catch(() => []);
+            if (!handles.length) return;
+            await browser.switchTo().window(handles.at(-1)).catch(() => {});
+            await browser.executeScript(quit).catch(() => {});
+          });
           await browser.quit().catch(() => {});
         }
       } finally {

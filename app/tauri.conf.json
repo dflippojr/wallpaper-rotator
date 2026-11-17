@@ -15,6 +15,7 @@
     "windows": [
       {
         "label": "main",
+        "create": false,
         "title": "Wallpaper Rotator",
         "width": 340,
         "height": 452,

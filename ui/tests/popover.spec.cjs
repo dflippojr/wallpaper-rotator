@@ -177,6 +177,41 @@ test('reopening the popover from the tray shows the wallpaper view, not Settings
   expect(await calls(page, 'save_settings')).toEqual([]);
 });
 
+// Issue #42: a popover left hidden for the grace period is destroyed, and the
+// next show builds a new webview that loads the page from scratch.
+test('a popover re-created after hiding loads the current state on the wallpaper view', async ({ page }) => {
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.locator('#f-query').fill('unsaved edit');
+  await page.keyboard.press('Escape');
+  await expectMainView(page);
+  await page.keyboard.press('Escape');
+  expect(await calls(page, 'hide_window'), 'Escape hides the popover').toHaveLength(1);
+
+  // The worker moved on while the popover was gone; the backend has the news.
+  const later = structuredClone(snapshot);
+  later.current[0].author = 'Later artist';
+  await page.addInitScript(state => {
+    const { invoke } = window.__TAURI__.core;
+    window.__TAURI__.core.invoke = async (command, args) => {
+      if (command !== 'get_state') return invoke(command, args);
+      window.recordedCalls.push({ command, args });
+      return structuredClone(state);
+    };
+  }, later);
+  await page.reload();
+
+  await expect(page.locator('#credit')).toHaveText('By Later artist');
+  await expectMainView(page);
+  expect(await calls(page, 'get_state'), 'the new page asks the backend').toHaveLength(1);
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await expect(page.locator('#f-query')).toHaveValue(snapshot.settings.query);
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+  // The rebuilt popover still drives the worker.
+  await page.getByRole('button', { name: 'New photo for Built-in', exact: true }).click();
+  expect(await calls(page, 'next_wallpaper')).toEqual([{ command: 'next_wallpaper', args: { index: 0 } }]);
+  expect(await calls(page, 'save_settings')).toEqual([]);
+});
+
 test.describe('first run with no usable photo source', () => {
   // Unsplash alone, with no key: no source can supply a photo.
   const setup = { ...snapshot, needs_setup: true, has_unsplash_key: false, has_pexels_key: false,
