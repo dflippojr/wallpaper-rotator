@@ -20,6 +20,7 @@ use tauri::image::Image;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::utils::config::WindowConfig;
+use tauri::webview::PageLoadEvent;
 use tauri::{
     AppHandle, Emitter, Manager, PhysicalPosition, Rect, State, WebviewWindow,
     WebviewWindowBuilder, WindowEvent,
@@ -46,9 +47,22 @@ const POPOVER: &str = "main";
 /// After that it is destroyed and the webview engine's processes can exit.
 const POPOVER_GRACE: Duration = Duration::from_secs(30);
 
-/// Decides when a hidden popover's webview may be destroyed. Each hide takes
-/// a ticket; any later show or hide makes older tickets stale, so only the
-/// most recent hide, with no show since, destroys the window.
+/// `POPOVER_GRACE`, or in a debug build the milliseconds in
+/// `WALLPAPER_ROTATOR_POPOVER_GRACE_MS`, so the real-app journey can watch a
+/// destroy without waiting 30 s.
+fn popover_grace() -> Duration {
+    let debug_override = cfg!(debug_assertions)
+        .then(|| std::env::var("WALLPAPER_ROTATOR_POPOVER_GRACE_MS").ok())
+        .flatten()
+        .and_then(|ms| ms.parse().ok())
+        .map(Duration::from_millis);
+    debug_override.unwrap_or(POPOVER_GRACE)
+}
+
+/// Orders the popover's shows and hides. Each one takes a ticket and makes
+/// every older ticket stale. A show commits only with the newest ticket, so a
+/// slow show can't undo a later hide; a destroy goes ahead only for the most
+/// recent hide, with no show since.
 #[derive(Default)]
 struct PopoverLife {
     generation: AtomicU64,
@@ -57,9 +71,16 @@ struct PopoverLife {
 }
 
 impl PopoverLife {
-    /// The popover was shown: pending destroys no longer apply.
-    fn shown(&self) {
-        self.generation.fetch_add(1, Ordering::SeqCst);
+    /// A show was asked for: pending destroys and older shows no longer
+    /// apply. Returns the ticket the show must hold when it commits.
+    fn shown(&self) -> u64 {
+        self.generation.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    /// Whether the show that took `ticket` should still make the popover
+    /// visible: no later show or hide came in while it was being built.
+    fn may_show(&self, ticket: u64) -> bool {
+        self.generation.load(Ordering::SeqCst) == ticket
     }
 
     /// The popover was hidden: returns the ticket a later destroy must hold.
@@ -290,13 +311,24 @@ fn popover(app: &AppHandle) -> Option<WebviewWindow> {
         .find(|w| w.label == POPOVER)
         .ok_or_else(|| anyhow::anyhow!("no {POPOVER} window in the config"))
         .map(popover_config)
-        .and_then(|config| Ok(WebviewWindowBuilder::from_config(app, &config)?.build()?));
+        .and_then(|config| {
+            let log_file = state.paths.log_file.clone();
+            Ok(WebviewWindowBuilder::from_config(app, &config)?
+                .on_page_load(move |_, payload| {
+                    if payload.event() == PageLoadEvent::Finished {
+                        log::write(&log_file, "popover webview loaded");
+                    }
+                })
+                .build()?)
+        });
     match built {
-        Ok(window) => Some(window),
+        Ok(window) => {
+            log::write(&state.paths.log_file, "popover webview created");
+            Some(window)
+        }
         Err(e) => {
-            let paths = &app.state::<AppState>().paths;
             log::write(
-                &paths.log_file,
+                &state.paths.log_file,
                 &format!("could not open the popover: {e:#}"),
             );
             None
@@ -317,7 +349,9 @@ fn popover_config(config: &WindowConfig) -> WindowConfig {
 }
 
 /// Hides the popover and destroys its webview once it has stayed hidden for
-/// `POPOVER_GRACE`, so the engine isn't resident while the app idles.
+/// `popover_grace()`, so the engine isn't resident while the app idles. Runs
+/// on the main thread (window events, commands, tray handlers), as do the
+/// commits in `show_popover`, so the two can't interleave.
 fn hide_popover(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(POPOVER) {
         let _ = window.hide();
@@ -325,47 +359,47 @@ fn hide_popover(app: &AppHandle) {
     let app = app.clone();
     let ticket = app.state::<AppState>().popover.hidden();
     std::thread::spawn(move || {
-        std::thread::sleep(POPOVER_GRACE);
+        std::thread::sleep(popover_grace());
         let main = app.clone();
         let _ = app.run_on_main_thread(move || {
             let Some(window) = main.get_webview_window(POPOVER) else {
                 return;
             };
             let visible = window.is_visible().unwrap_or(true);
-            if main
-                .state::<AppState>()
-                .popover
-                .may_destroy(ticket, visible)
-            {
-                let _ = window.destroy();
+            let state = main.state::<AppState>();
+            if state.popover.may_destroy(ticket, visible) && window.destroy().is_ok() {
+                log::write(&state.paths.log_file, "popover webview destroyed");
             }
         });
     });
 }
 
 /// Shows the popover, next to the tray icon when `near` is given. Callers are
-/// tray, menu and setup handlers on the main thread, so the window is found
-/// or built, placed and shown on a worker thread; Tauri runs each window call
-/// on the main thread once the handler has returned.
+/// tray, menu, single-instance and setup handlers on the main thread, so the
+/// window is found or built and placed on a worker thread. Making it visible
+/// goes back to the main thread and happens only if no later show or hide
+/// came in meanwhile.
 fn show_popover(app: &AppHandle, near: Option<&Rect>) {
-    app.state::<AppState>().popover.shown();
+    let ticket = app.state::<AppState>().popover.shown();
     let app = app.clone();
     let near = near.cloned();
     std::thread::spawn(move || {
         let Some(window) = popover(&app) else {
             return;
         };
-        match near {
-            Some(rect) => {
-                let _ = place_near(&window, &rect);
+        let _ = match near {
+            Some(rect) => place_near(&window, &rect),
+            None => window.center(),
+        };
+        let main = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            if !main.state::<AppState>().popover.may_show(ticket) {
+                return;
             }
-            None => {
-                let _ = window.center();
-            }
-        }
-        let _ = window.show();
-        let _ = window.set_focus();
-        let _ = window.emit("popover-shown", ());
+            let _ = window.show();
+            let _ = window.set_focus();
+            let _ = window.emit("popover-shown", ());
+        });
     });
 }
 
@@ -701,6 +735,34 @@ mod tests {
         let second = life.hidden();
         assert!(!life.may_destroy(first, false), "stale ticket");
         assert!(life.may_destroy(second, false));
+    }
+
+    #[test]
+    fn a_hide_cancels_a_show_still_being_built() {
+        let life = PopoverLife::default();
+        let show = life.shown();
+        assert!(life.may_show(show));
+        let hide = life.hidden();
+        assert!(!life.may_show(show), "the slow show must not undo the hide");
+        assert!(life.may_destroy(hide, false));
+    }
+
+    #[test]
+    fn only_the_latest_of_two_quick_shows_commits() {
+        let life = PopoverLife::default();
+        let first = life.shown();
+        let second = life.shown();
+        assert!(!life.may_show(first));
+        assert!(life.may_show(second));
+    }
+
+    #[test]
+    fn the_grace_period_is_30_seconds_unless_a_debug_build_overrides_it() {
+        assert_eq!(POPOVER_GRACE, Duration::from_secs(30));
+        // Not set in the test environment.
+        if std::env::var_os("WALLPAPER_ROTATOR_POPOVER_GRACE_MS").is_none() {
+            assert_eq!(popover_grace(), POPOVER_GRACE);
+        }
     }
 
     #[test]
