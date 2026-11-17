@@ -16,7 +16,6 @@
       {
         "label": "main",
         "create": false,
-        "incognito": true,
         "title": "Wallpaper Rotator",
         "width": 340,
         "height": 452,

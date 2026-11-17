@@ -19,6 +19,7 @@ use rotator_core::wallpaper::{self, Display, Layout, Monitor};
 use tauri::image::Image;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::utils::config::WindowConfig;
 use tauri::{
     AppHandle, Emitter, Manager, PhysicalPosition, Rect, State, WebviewWindow,
     WebviewWindowBuilder, WindowEvent,
@@ -38,10 +39,7 @@ struct AppState {
 }
 
 /// The popover's label in `tauri.conf.json`. Its window is not created at
-/// startup (`"create": false`); `popover` builds it from that config. It is
-/// `"incognito"` so its webview has no persistent data store: on macOS the
-/// default store keeps WebKit's Networking process alive after the last
-/// webview is gone. The popover keeps nothing in web storage.
+/// startup (`"create": false`); `popover` builds it from that config.
 const POPOVER: &str = "main";
 
 /// How long a hidden popover keeps its webview, so a quick re-open is instant.
@@ -54,6 +52,8 @@ const POPOVER_GRACE: Duration = Duration::from_secs(30);
 #[derive(Default)]
 struct PopoverLife {
     generation: AtomicU64,
+    /// Held while the window is looked up and, if missing, built.
+    building: Mutex<()>,
 }
 
 impl PopoverLife {
@@ -273,7 +273,12 @@ fn place_near(window: &WebviewWindow, icon: &Rect) -> tauri::Result<()> {
 }
 
 /// The popover window, built from its config when it doesn't exist yet.
+/// Never call it on the main thread: on Windows, building a webview from an
+/// event handler deadlocks (see `WebviewWindowBuilder::from_config`).
 fn popover(app: &AppHandle) -> Option<WebviewWindow> {
+    // Two quick shows must not both build the window.
+    let state = app.state::<AppState>();
+    let _building = state.popover.building.lock().unwrap();
     if let Some(window) = app.get_webview_window(POPOVER) {
         return Some(window);
     }
@@ -284,7 +289,8 @@ fn popover(app: &AppHandle) -> Option<WebviewWindow> {
         .iter()
         .find(|w| w.label == POPOVER)
         .ok_or_else(|| anyhow::anyhow!("no {POPOVER} window in the config"))
-        .and_then(|config| Ok(WebviewWindowBuilder::from_config(app, config)?.build()?));
+        .map(popover_config)
+        .and_then(|config| Ok(WebviewWindowBuilder::from_config(app, &config)?.build()?));
     match built {
         Ok(window) => Some(window),
         Err(e) => {
@@ -296,6 +302,18 @@ fn popover(app: &AppHandle) -> Option<WebviewWindow> {
             None
         }
     }
+}
+
+/// The popover's window config as this OS builds it. On macOS the webview is
+/// incognito, with no persistent data store: WKWebView's default store keeps
+/// WebKit's Networking process alive after the last webview is gone. The
+/// popover keeps nothing in web storage. Not on Linux, where Wry's ephemeral
+/// WebKitGTK context refuses WebDriver automation (the real-app journey), and
+/// not on Windows until #44 measures whether WebView2 needs it.
+fn popover_config(config: &WindowConfig) -> WindowConfig {
+    let mut config = config.clone();
+    config.incognito |= cfg!(target_os = "macos");
+    config
 }
 
 /// Hides the popover and destroys its webview once it has stayed hidden for
@@ -325,22 +343,30 @@ fn hide_popover(app: &AppHandle) {
     });
 }
 
+/// Shows the popover, next to the tray icon when `near` is given. Callers are
+/// tray, menu and setup handlers on the main thread, so the window is found
+/// or built, placed and shown on a worker thread; Tauri runs each window call
+/// on the main thread once the handler has returned.
 fn show_popover(app: &AppHandle, near: Option<&Rect>) {
     app.state::<AppState>().popover.shown();
-    let Some(window) = popover(app) else {
-        return;
-    };
-    match near {
-        Some(rect) => {
-            let _ = place_near(&window, rect);
+    let app = app.clone();
+    let near = near.cloned();
+    std::thread::spawn(move || {
+        let Some(window) = popover(&app) else {
+            return;
+        };
+        match near {
+            Some(rect) => {
+                let _ = place_near(&window, &rect);
+            }
+            None => {
+                let _ = window.center();
+            }
         }
-        None => {
-            let _ = window.center();
-        }
-    }
-    let _ = window.show();
-    let _ = window.set_focus();
-    let _ = window.emit("popover-shown", ());
+        let _ = window.show();
+        let _ = window.set_focus();
+        let _ = window.emit("popover-shown", ());
+    });
 }
 
 fn toggle_popover(app: &AppHandle, near: &Rect) {
@@ -695,8 +721,18 @@ mod tests {
             .expect("the popover's window config");
         assert_eq!(popover["create"], false, "no webview at startup");
         assert_eq!(popover["visible"], false, "built hidden, shown once placed");
-        assert_eq!(popover["incognito"], true, "no data store outlives it");
         assert_eq!(windows.len(), 1, "no other window keeps a webview alive");
+    }
+
+    #[test]
+    fn only_macos_builds_an_incognito_popover() {
+        let built = popover_config(&WindowConfig::default());
+        assert_eq!(built.incognito, cfg!(target_os = "macos"));
+        let kept = popover_config(&WindowConfig {
+            incognito: true,
+            ..Default::default()
+        });
+        assert!(kept.incognito, "never turns a configured incognito off");
     }
 
     #[test]
