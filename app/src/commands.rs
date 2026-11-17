@@ -37,12 +37,15 @@ pub(super) fn save_settings(
     access_key: Option<String>,
     pexels_key: Option<String>,
 ) -> Result<(), String> {
-    let path = &state.paths.config_file;
-    let mut config = Config::load_or_create(path).map_err(|e| format!("{e:#}"))?;
-    settings
-        .apply_to(&mut config, access_key.as_deref(), pexels_key.as_deref())
-        .map_err(|e| e.to_string())?;
-    config.save(path).map_err(|e| format!("{e:#}"))?;
+    // Read, change and write under the config lock, so a Pause the worker
+    // saves at the same moment can't write back the old settings (#92).
+    let config = Config::update(&state.paths.config_file, |config| {
+        settings
+            .apply_to(config, access_key.as_deref(), pexels_key.as_deref())
+            // The form shows only the top message, without its cause.
+            .map_err(|e| anyhow::anyhow!(e.to_string()))
+    })
+    .map_err(|e| format!("{e:#}"))?;
     sync_autostart(&app, config.start_at_login);
     state.send(Command::Reload);
     Ok(())

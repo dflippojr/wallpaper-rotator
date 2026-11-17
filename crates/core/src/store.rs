@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -179,13 +180,31 @@ fn set_or_photo<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Set>, D::Error
     }))
 }
 
+/// Replaces `path` with `bytes` in one rename, so a reader sees the old file
+/// or the new one, never part of either. Each write gets its own temporary
+/// file next to `path` (#92): two writes at once can't mix, and the last
+/// rename wins whole. The temporary file is deleted if the write fails.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    static WRITES: AtomicU64 = AtomicU64::new(0);
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).with_context(|| format!("could not create {}", dir.display()))?;
     }
-    let tmp = path.with_extension("tmp");
-    fs::write(&tmp, bytes).with_context(|| format!("could not write {}", tmp.display()))?;
-    fs::rename(&tmp, path).with_context(|| format!("could not replace {}", path.display()))
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(
+        ".{}.{}.tmp",
+        std::process::id(),
+        WRITES.fetch_add(1, Ordering::Relaxed)
+    ));
+    let tmp = path.with_file_name(name);
+    let written = fs::write(&tmp, bytes)
+        .with_context(|| format!("could not write {}", tmp.display()))
+        .and_then(|()| {
+            fs::rename(&tmp, path).with_context(|| format!("could not replace {}", path.display()))
+        });
+    if written.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    written
 }
 
 /// Files this app writes into the images folder.
@@ -378,6 +397,67 @@ mod tests {
         assert_eq!(State::load(&path), lost);
         fs::remove_file(&path).unwrap();
         assert_eq!(State::load(&path), State::default());
+    }
+
+    /// #92: the settings screen and the worker can save `config.toml` at the
+    /// same moment. Two writes released together must both succeed and leave
+    /// one payload whole, never a mix. Bounded rounds, no spinning.
+    #[test]
+    fn concurrent_writes_to_one_path_never_fail_or_tear() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let long = format!("paused = false\nquery = \"{}\"\n", "m".repeat(4000));
+        let short = "paused = true\n".to_string();
+        for round in 0..200 {
+            let barrier = Arc::new(Barrier::new(2));
+            let writers: Vec<_> = [long.clone(), short.clone()]
+                .into_iter()
+                .map(|text| {
+                    let (barrier, path) = (barrier.clone(), path.clone());
+                    thread::spawn(move || {
+                        barrier.wait();
+                        write_atomic(&path, text.as_bytes()).map_err(|e| format!("{e:#}"))
+                    })
+                })
+                .collect();
+            for writer in writers {
+                if let Err(e) = writer.join().unwrap() {
+                    panic!("round {round}: a write failed: {e}");
+                }
+            }
+            let got = fs::read_to_string(&path).unwrap();
+            assert!(
+                got == long || got == short,
+                "round {round}: the file is neither payload ({} bytes)",
+                got.len()
+            );
+        }
+        let names: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["config.toml"], "temporary files left behind");
+    }
+
+    /// A write whose rename fails removes its temporary file.
+    #[test]
+    fn a_failed_write_leaves_no_temporary_file() {
+        let dir = tempfile::tempdir().unwrap();
+        // A non-empty folder where the file should go: the rename can't replace it.
+        let target = dir.path().join("config.toml");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("keep"), b"x").unwrap();
+
+        let err = write_atomic(&target, b"paused = true\n").unwrap_err();
+        assert!(format!("{err:#}").contains("could not replace"), "{err:#}");
+        let names: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["config.toml"], "temporary file left behind");
     }
 
     #[test]

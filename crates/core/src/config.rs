@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -68,19 +69,44 @@ impl Config {
     /// Loads the config, writing the defaults on first run. A file that exists
     /// but can't be parsed is an [`Unparseable`] error and stays as it is.
     pub fn load_or_create(path: &Path) -> Result<Self> {
+        if let Some(config) = Self::read(path)? {
+            return Ok(config);
+        }
+        let _writing = write_lock();
+        // Another thread may have written the file since the read above.
+        if let Some(config) = Self::read(path)? {
+            return Ok(config);
+        }
+        let config = Self::default();
+        config.save(path)?;
+        Ok(config)
+    }
+
+    /// Loads the config (the defaults if there is no file), applies `change`
+    /// and saves the result, all under one process-wide lock (#92). Every
+    /// write of `config.toml` goes through here or `load_or_create`, so the
+    /// settings screen and the worker's Pause can't each write back a copy
+    /// that is missing the other's change. Nothing is written if `change`
+    /// fails or the file can't be parsed.
+    pub fn update(path: &Path, change: impl FnOnce(&mut Self) -> Result<()>) -> Result<Self> {
+        let _writing = write_lock();
+        let mut config = Self::read(path)?.unwrap_or_default();
+        change(&mut config)?;
+        config.save(path)?;
+        Ok(config)
+    }
+
+    /// The saved config, or `None` if there is no file.
+    fn read(path: &Path) -> Result<Option<Self>> {
         match fs::read(path) {
-            Ok(bytes) => Self::parse(&bytes).map_err(|problem| {
+            Ok(bytes) => Self::parse(&bytes).map(Some).map_err(|problem| {
                 Unparseable {
                     path: path.to_path_buf(),
                     problem,
                 }
                 .into()
             }),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                let config = Self::default();
-                config.save(path)?;
-                Ok(config)
-            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e).with_context(|| format!("could not read {}", path.display())),
         }
     }
@@ -100,6 +126,10 @@ impl Config {
         })
     }
 
+    /// Writes this config over the file without taking the lock. App code
+    /// changes the file through [`Config::update`] instead, so a concurrent
+    /// writer's change isn't lost; this is for first-run writes under the
+    /// lock and for tests that set up a file.
     pub fn save(&self, path: &Path) -> Result<()> {
         let text = toml::to_string_pretty(self)?;
         crate::store::write_atomic(path, text.as_bytes())
@@ -130,6 +160,14 @@ impl Config {
             && self.per_display == other.per_display
             && self.sources == other.sources
     }
+}
+
+/// Held while a thread reads, changes and writes `config.toml`. It guards no
+/// data, so a thread that panicked while holding it leaves nothing broken:
+/// the poison is ignored rather than failing every later save.
+fn write_lock() -> MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// The config file exists but doesn't hold valid settings. Only a hand edit
@@ -181,6 +219,77 @@ mod tests {
         assert_eq!(config, Config::default());
         assert!(path.exists());
         assert_eq!(Config::load_or_create(&path).unwrap(), config);
+    }
+
+    #[test]
+    fn update_starts_from_the_defaults_and_saves_the_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sub/config.toml");
+        let updated = Config::update(&path, |c| {
+            c.paused = true;
+            Ok(())
+        })
+        .unwrap();
+        let expected = Config {
+            paused: true,
+            ..Config::default()
+        };
+        assert_eq!(updated, expected);
+        assert_eq!(Config::load_or_create(&path).unwrap(), expected);
+    }
+
+    #[test]
+    fn update_writes_nothing_when_the_change_fails_or_the_file_is_broken() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        Config::default().save(&path).unwrap();
+        let before = fs::read(&path).unwrap();
+        let err = Config::update(&path, |c| {
+            c.paused = true;
+            anyhow::bail!("bad collection")
+        })
+        .unwrap_err();
+        assert_eq!(err.to_string(), "bad collection");
+        assert_eq!(fs::read(&path).unwrap(), before);
+
+        fs::write(&path, b"paused = [").unwrap();
+        let err = Config::update(&path, |_| Ok(())).unwrap_err();
+        assert!(err.downcast_ref::<Unparseable>().is_some(), "{err:#}");
+        assert_eq!(fs::read(&path).unwrap(), b"paused = [");
+    }
+
+    /// #92: the first-run write in `load_or_create` takes the same lock and
+    /// looks again, so it can't put the defaults over a change saved while
+    /// it was deciding the file was missing. Bounded rounds, no spinning.
+    #[test]
+    fn first_run_defaults_never_overwrite_an_overlapping_update() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        for round in 0..200 {
+            let _ = fs::remove_file(&path);
+            let barrier = Arc::new(Barrier::new(2));
+            let updater = {
+                let (barrier, path) = (barrier.clone(), path.clone());
+                thread::spawn(move || {
+                    barrier.wait();
+                    Config::update(&path, |c| {
+                        c.paused = true;
+                        Ok(())
+                    })
+                    .unwrap();
+                })
+            };
+            barrier.wait();
+            Config::load_or_create(&path).unwrap();
+            updater.join().unwrap();
+            assert!(
+                Config::load_or_create(&path).unwrap().paused,
+                "round {round}: the defaults overwrote the update"
+            );
+        }
     }
 
     #[test]

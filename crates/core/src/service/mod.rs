@@ -1,6 +1,15 @@
-//! The rotation worker. One thread owns the config, state and cache; the UI
-//! talks to it through [`Command`]s and gets [`Snapshot`]s back, so nothing
-//! else touches the images folder.
+//! The rotation worker. One thread owns the state and cache; the UI talks
+//! to it through [`Command`]s and gets [`Snapshot`]s back, so nothing else
+//! touches `state.json` or the images folder.
+//!
+//! `config.toml` has more than one writer: the settings screen's Save (on
+//! the Tauri command thread), this worker's Pause, and the first-run
+//! defaults that `Config::load_or_create` writes from either side (for
+//! example via [`favorites_folder`]). They all go through
+//! `Config::update` or `Config::load_or_create`, which hold one
+//! process-wide lock while they read, change and write the file (#92). The
+//! worker never saves its own copy of the config; after a write it adopts
+//! the file (`Reload`).
 //!
 //! Photos come from the sources ticked in Settings. Each source's answers
 //! are queued, so most rotations need no search request; each photo is
@@ -285,9 +294,11 @@ impl Service {
     }
 
     fn save_paused(&self, paused: bool) -> Result<()> {
-        let mut config = Config::load_or_create(&self.paths.config_file)?;
-        config.paused = paused;
-        config.save(&self.paths.config_file)
+        Config::update(&self.paths.config_file, |config| {
+            config.paused = paused;
+            Ok(())
+        })
+        .map(drop)
     }
 
     fn reload(&mut self) {
