@@ -6,6 +6,7 @@ use std::path::Path;
 use rotator_core::config::Config;
 use rotator_core::paths::Paths;
 use rotator_core::service::{self, Command, Settings, Snapshot};
+use rotator_core::source;
 use tauri::{AppHandle, State};
 use tauri_plugin_opener::OpenerExt;
 
@@ -55,20 +56,19 @@ pub(super) fn save_settings(
 /// sites, so the page can't be used to open anything else.
 #[tauri::command]
 pub(super) fn open_link(app: AppHandle, url: String) -> Result<(), String> {
-    let allowed = [
-        "https://unsplash.com/",
-        "https://www.unsplash.com/",
-        "https://www.pexels.com/",
-        "https://wallhaven.cc/",
-        "https://www.bing.com/",
-        "https://commons.wikimedia.org/",
-    ];
-    if !allowed.iter().any(|prefix| url.starts_with(prefix)) {
-        return Err("only Unsplash links can be opened".into());
-    }
+    check_link(&url)?;
     app.opener()
         .open_url(url, None::<&str>)
         .map_err(|e| e.to_string())
+}
+
+/// Refuses any link that isn't on a photo source's site.
+fn check_link(url: &str) -> Result<(), String> {
+    if source::is_source_link(url) {
+        Ok(())
+    } else {
+        Err("only links to the photo sources' sites can be opened".into())
+    }
 }
 
 /// Opens the favorites folder in Finder, Explorer or the GNOME file manager.
@@ -109,6 +109,31 @@ pub(super) fn quit(app: AppHandle) {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn opens_only_the_photo_sources_sites() {
+        for url in [
+            "https://unsplash.com/photos/x?utm_source=wallpaper_rotator",
+            "https://www.pexels.com/photo/1/",
+            "https://wallhaven.cc/w/abc",
+            "https://www.bing.com/search?q=x",
+            "https://commons.wikimedia.org/wiki/File:A.jpg",
+        ] {
+            assert_eq!(check_link(url), Ok(()), "{url}");
+        }
+        for url in [
+            "https://example.com/",
+            "https://unsplash.com.example.com/",
+            "http://unsplash.com/photos/x",
+            "file:///etc/passwd",
+        ] {
+            assert_eq!(
+                check_link(url),
+                Err("only links to the photo sources' sites can be opened".into()),
+                "{url}"
+            );
+        }
+    }
 
     /// The folder `open_favorites_with` handed to the opener, if it got that far.
     fn opened(paths: &Paths) -> (Result<(), String>, Option<PathBuf>) {

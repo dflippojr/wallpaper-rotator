@@ -5,7 +5,7 @@ use anyhow::Result;
 use serde::Serialize;
 
 use crate::config::{Config, MIN_CACHE_MB};
-use crate::source::{unsplash, SourceId};
+use crate::source::{unsplash, SourceId, BING};
 use crate::store::{Set, Wallpaper};
 
 /// What the UI shows. The popover's test fixture (`ui/tests/fixtures/state.json`)
@@ -74,7 +74,7 @@ impl From<&Wallpaper> for WallpaperView {
 /// The name to credit: picture-of-the-day photos come from Bing or Commons.
 fn provider(source: SourceId, id: &str) -> &'static str {
     match source {
-        SourceId::Daily if id.starts_with("bing-") => "Bing",
+        SourceId::Daily if id.starts_with("bing-") => BING.name,
         SourceId::Daily => "Wikimedia Commons",
         other => other.name(),
     }

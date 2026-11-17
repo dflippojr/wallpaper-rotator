@@ -5,8 +5,9 @@
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
-use super::{Candidate, Image, SourceId};
+use super::{Candidate, Image, SourceId, UNSPLASH};
 use crate::net::{append_query, encode, parse, Call, Http};
+use crate::probe::{Fixture, Keep, Probe, ProbeArgs};
 
 /// Appended to Unsplash links, as the API guidelines ask.
 pub const UTM: &str = "utm_source=wallpaper_rotator&utm_medium=referral";
@@ -83,7 +84,7 @@ fn auth(key: &str) -> String {
 }
 
 fn call(key: &str, url: String) -> Call {
-    Call::new("Unsplash", url)
+    Call::new(UNSPLASH.name, url)
         .header("Authorization", auth(key))
         .header("Accept-Version", "v1")
 }
@@ -157,7 +158,7 @@ pub fn batch_call(
     username: &str,
 ) -> Call {
     let url = batch_url(
-        http.base("Unsplash"),
+        http.base(UNSPLASH.name),
         query,
         topic_ids,
         collections,
@@ -167,7 +168,7 @@ pub fn batch_call(
 }
 
 pub fn parse_batch(body: &str) -> Result<Vec<Candidate>> {
-    let photos: Vec<Photo> = parse("Unsplash", body)?;
+    let photos: Vec<Photo> = parse(UNSPLASH.name, body)?;
     Ok(photos.into_iter().map(candidate).collect())
 }
 
@@ -273,14 +274,14 @@ pub fn topic_id(http: &Http, key: &str, slug_or_id: &str) -> Result<String> {
 pub fn topic_call(http: &Http, key: &str, slug_or_id: &str) -> Call {
     let url = format!(
         "{}/topics/{}",
-        http.base("Unsplash"),
+        http.base(UNSPLASH.name),
         encode(slug_or_id.trim())
     );
     call(key, url)
 }
 
 pub fn parse_topic(body: &str) -> Result<String> {
-    let topic: Topic = parse("Unsplash", body)?;
+    let topic: Topic = parse(UNSPLASH.name, body)?;
     Ok(topic.id)
 }
 
@@ -293,6 +294,42 @@ pub fn track(http: &Http, key: &str, url: &str) -> Result<()> {
 /// The download report for a photo's `download_location`.
 pub fn track_call(key: &str, url: &str) -> Call {
     call(key, url.to_string())
+}
+
+/// The live check: one batch of random photos, then the download report
+/// for the photo it fetched.
+pub fn probe(args: ProbeArgs<'_>) -> Probe<'_> {
+    let key = args.key;
+    Probe {
+        calls: vec![batch_call(args.http, key, "", &[], &[], "")],
+        parse: Box::new(parse_batch),
+        report: Some(Box::new(move |url| track_call(key, url))),
+    }
+}
+
+/// Random photos, a search and a topic, as the tests replay them. The
+/// download report is recorded from the random list (see
+/// [`crate::probe::record_sources`]).
+pub fn fixtures(args: ProbeArgs<'_>) -> Vec<Fixture> {
+    let ProbeArgs { http, key, .. } = args;
+    let photos = |path, query| {
+        Fixture::new(
+            path,
+            vec![batch_call(http, key, query, &[], &[], "")],
+            Keep::List,
+            |body| Ok(parse_batch(body)?.len()),
+        )
+    };
+    vec![
+        photos("unsplash/random.json", ""),
+        photos("unsplash/search.json", "mountains"),
+        Fixture::new(
+            "unsplash/topic.json",
+            vec![topic_call(http, key, "wallpapers")],
+            Keep::All,
+            |body| parse_topic(body).map(|_| 1),
+        ),
+    ]
 }
 
 fn candidate(photo: Photo) -> Candidate {
@@ -538,7 +575,7 @@ mod tests {
 
     #[test]
     fn missing_collection_or_photographer_has_a_specific_error() {
-        let missing = || crate::net::explain("Unsplash", ureq::Error::StatusCode(404));
+        let missing = || crate::net::explain(UNSPLASH.name, ureq::Error::StatusCode(404));
         assert_eq!(
             batch_error(missing(), Selection::Collections).to_string(),
             "Unsplash couldn't find that collection"
@@ -551,7 +588,7 @@ mod tests {
             batch_error(missing(), Selection::Search).to_string(),
             "Unsplash found nothing for that search"
         );
-        let limited = crate::net::explain("Unsplash", ureq::Error::StatusCode(403));
+        let limited = crate::net::explain(UNSPLASH.name, ureq::Error::StatusCode(403));
         assert!(crate::net::is_rate_limited(&batch_error(
             limited,
             Selection::Collections

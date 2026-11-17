@@ -5,8 +5,9 @@
 use anyhow::{bail, Result};
 use serde::Deserialize;
 
-use super::{Candidate, Image, SourceId};
+use super::{Candidate, Image, SourceId, PEXELS};
 use crate::net::{append_query, encode, parse, Call, Http};
+use crate::probe::{Fixture, Keep, Probe, ProbeArgs};
 
 pub const BATCH: u32 = 40;
 /// Pexels serves search results this deep at most.
@@ -59,7 +60,7 @@ pub fn batch(
 /// Page `page` of search results for `query`, or of curated photos.
 pub fn batch_call(http: &Http, key: &str, query: &str, page: u64) -> Call {
     let query = query.trim();
-    let api = http.base("Pexels");
+    let api = http.base(PEXELS.name);
     let url = if query.is_empty() {
         format!("{api}/v1/curated?per_page={BATCH}&page={page}")
     } else {
@@ -68,12 +69,12 @@ pub fn batch_call(http: &Http, key: &str, query: &str, page: u64) -> Call {
             encode(query)
         )
     };
-    Call::new("Pexels", url).header("Authorization", key.trim())
+    Call::new(PEXELS.name, url).header("Authorization", key.trim())
 }
 
 /// The landscape photos on a page, and how many pages there are.
 pub fn parse_batch(body: &str) -> Result<(Vec<Candidate>, u64)> {
-    let result: Page = parse("Pexels", body)?;
+    let result: Page = parse(PEXELS.name, body)?;
     let pages = result.total_results.div_ceil(u64::from(BATCH)).max(1);
     let photos: Vec<Candidate> = result
         .photos
@@ -83,6 +84,32 @@ pub fn parse_batch(body: &str) -> Result<(Vec<Candidate>, u64)> {
         .map(candidate)
         .collect();
     Ok((photos, pages))
+}
+
+/// The live check: one page of curated photos.
+pub fn probe(args: ProbeArgs<'_>) -> Probe<'_> {
+    Probe {
+        calls: vec![batch_call(args.http, args.key, "", 1)],
+        parse: Box::new(|body| Ok(parse_batch(body)?.0)),
+        report: None,
+    }
+}
+
+/// Curated photos and a search, as the tests replay them.
+pub fn fixtures(args: ProbeArgs<'_>) -> Vec<Fixture> {
+    let ProbeArgs { http, key, .. } = args;
+    let photos = |path, query| {
+        Fixture::new(
+            path,
+            vec![batch_call(http, key, query, 1)],
+            Keep::ListIn("photos"),
+            |body| Ok(parse_batch(body)?.0.len()),
+        )
+    };
+    vec![
+        photos("pexels/curated.json", ""),
+        photos("pexels/search.json", "mountains"),
+    ]
 }
 
 fn candidate(photo: Photo) -> Candidate {

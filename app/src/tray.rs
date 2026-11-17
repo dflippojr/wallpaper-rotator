@@ -2,7 +2,7 @@
 //! screen, and the pause item follows the worker's snapshots.
 
 use rotator_core::service::{Command, Snapshot, WallpaperView};
-use rotator_core::source::SourceId;
+use rotator_core::source;
 use tauri::image::Image;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -124,7 +124,7 @@ fn tray_tooltip(photos: &[WallpaperView]) -> String {
 /// Wallhaven's author is the site and a favorite's author comes from its file
 /// name, so these photos name their source instead of a photographer.
 fn anonymous(source: &str) -> bool {
-    source == SourceId::Wallhaven.name() || source == SourceId::Favorites.name()
+    !source::credits_a_person(source)
 }
 
 #[cfg(test)]

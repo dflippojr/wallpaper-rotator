@@ -11,12 +11,10 @@ use serde_json::Value;
 
 use crate::config::Config;
 use crate::net::{key_forms, scrub, Call, Http};
-use crate::source::{daily, image_url, pexels, unsplash, wallhaven, Candidate};
+use crate::source::{image_url, unsplash, Api, Candidate, SPECS};
 
 pub use crate::config::Keys;
 
-/// The sources the live check calls, by their API names.
-pub const SOURCES: [&str; 5] = ["Unsplash", "Pexels", "Wallhaven", "Bing", "Wikimedia"];
 /// Photos kept in a recorded list, so fixtures stay small.
 const KEEP: usize = 4;
 /// Fields about the account behind the key, not the photo. Removed from
@@ -37,14 +35,6 @@ impl Keys {
             .and_then(|text| toml::from_str::<Config>(&text).ok())
             .unwrap_or_default();
         saved.keys(true)
-    }
-
-    fn for_source(&self, source: &str) -> Option<&str> {
-        match source {
-            "Unsplash" => Some(&self.unsplash),
-            "Pexels" => Some(&self.pexels),
-            _ => None,
-        }
     }
 
     fn all(&self) -> impl Iterator<Item = &str> {
@@ -76,7 +66,7 @@ pub fn contains_key(text: &str, keys: &Keys) -> bool {
 
 /// What part of a reply a recording keeps.
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum Keep {
+pub(crate) enum Keep {
     /// The whole reply.
     All,
     /// The first [`KEEP`] items of the top-level list.
@@ -101,73 +91,76 @@ pub struct Fixture {
 /// The app's parser for a reply; how many photos (or topics) it gave.
 type Counter = Box<dyn Fn(&str) -> Result<usize>>;
 
+impl Fixture {
+    /// Records the first of `calls` whose reply, cut down as `keep` says,
+    /// gives `check` a photo.
+    pub(crate) fn new(
+        path: &'static str,
+        calls: Vec<Call>,
+        keep: Keep,
+        check: impl Fn(&str) -> Result<usize> + 'static,
+    ) -> Self {
+        Self {
+            path,
+            calls,
+            keep,
+            check: Box::new(check),
+        }
+    }
+}
+
+/// What a source's probe and fixtures are built from.
+#[derive(Clone, Copy)]
+pub struct ProbeArgs<'a> {
+    pub http: &'a Http,
+    /// The source's key; empty for a keyless source.
+    pub key: &'a str,
+    /// The wallpaper size the live check downloads at.
+    pub size: (u32, u32),
+    /// Unix seconds, for the picture of the day.
+    pub today: u64,
+}
+
+/// The app's parser for a reply: the photos it gave.
+pub type Parser<'a> = Box<dyn Fn(&str) -> Result<Vec<Candidate>> + 'a>;
+/// Builds the request that reports a photo's use from its `track_url`.
+pub type Reporter<'a> = Box<dyn Fn(&str) -> Call + 'a>;
+
+/// One API's live check, as its source builds it: the requests the app
+/// would send and the app's parser for the replies.
+pub struct Probe<'a> {
+    /// Tried in order until one gives a photo (Wikimedia's picture of the
+    /// day can be a portrait or an SVG).
+    pub calls: Vec<Call>,
+    pub parse: Parser<'a>,
+    /// The request that reports the photo's use, from its `track_url`
+    /// (Unsplash's download report, which its API terms require).
+    pub report: Option<Reporter<'a>>,
+}
+
 /// Every fixture the keys allow, and the keyed sources skipped for lack
-/// of a key. `today` is Unix seconds, for the picture of the day.
+/// of a key, by API name. `today` is Unix seconds, for the picture of the
+/// day.
 pub fn fixtures(http: &Http, keys: &Keys, today: u64) -> (Vec<Fixture>, Vec<&'static str>) {
     let mut out = Vec::new();
     let mut skipped = Vec::new();
-    let key = &keys.unsplash;
-    if key.is_empty() {
-        skipped.push("Unsplash");
-    } else {
-        let photos = |path, query| Fixture {
-            path,
-            calls: vec![unsplash::batch_call(http, key, query, &[], &[], "")],
-            keep: Keep::List,
-            check: Box::new(|body| Ok(unsplash::parse_batch(body)?.len())),
+    for spec in &SPECS {
+        let key = spec.key.map_or("", |kind| keys.get(kind));
+        if spec.key.is_some() && key.is_empty() {
+            skipped.extend(spec.apis.iter().map(|api| api.name));
+            continue;
+        }
+        let args = ProbeArgs {
+            http,
+            key,
+            size: (1920, 1080),
+            today,
         };
-        out.push(photos("unsplash/random.json", ""));
-        out.push(photos("unsplash/search.json", "mountains"));
-        out.push(Fixture {
-            path: "unsplash/topic.json",
-            calls: vec![unsplash::topic_call(http, key, "wallpapers")],
-            keep: Keep::All,
-            check: Box::new(|body| unsplash::parse_topic(body).map(|_| 1)),
-        });
+        for api in spec.apis {
+            out.extend((api.fixtures)(args));
+        }
     }
-    let key = &keys.pexels;
-    if key.is_empty() {
-        skipped.push("Pexels");
-    } else {
-        let photos = |path, query| Fixture {
-            path,
-            calls: vec![pexels::batch_call(http, key, query, 1)],
-            keep: Keep::ListIn("photos"),
-            check: Box::new(|body| Ok(pexels::parse_batch(body)?.0.len())),
-        };
-        out.push(photos("pexels/curated.json", ""));
-        out.push(photos("pexels/search.json", "mountains"));
-    }
-    out.push(Fixture {
-        path: "wallhaven/search.json",
-        calls: vec![wallhaven::search_call(http, "", 1920, 1080)],
-        keep: Keep::ListIn("data"),
-        check: Box::new(|body| Ok(wallhaven::parse_search(body)?.len())),
-    });
-    let bing = http.base("Bing").to_string();
-    out.push(Fixture {
-        path: "daily/bing.json",
-        calls: vec![daily::bing_call(http)],
-        keep: Keep::ListIn("images"),
-        check: Box::new(move |body| Ok(daily::parse_bing(&bing, body)?.len())),
-    });
-    out.push(Fixture {
-        path: "daily/wikimedia.json",
-        calls: wikimedia_calls(http, today),
-        keep: Keep::Field("image"),
-        check: Box::new(|body| Ok(daily::parse_wikimedia(body)?.into_iter().count())),
-    });
     (out, skipped)
-}
-
-/// The days of Wikimedia history the app asks for, newest first.
-fn wikimedia_calls(http: &Http, today: u64) -> Vec<Call> {
-    (0..daily::WIKIMEDIA_DAYS)
-        .map(|back| {
-            let (y, m, d) = daily::civil_date(today.saturating_sub(back * 86_400));
-            daily::wikimedia_call(http, y, m, d)
-        })
-        .collect()
 }
 
 /// Records every fixture the keys allow whose source is in `only` (all
@@ -387,56 +380,41 @@ impl Outcome {
 /// called. `today` is Unix seconds, for the picture of the day. No key
 /// appears in the results.
 pub fn live(http: &Http, keys: &Keys, (width, height): (u32, u32), today: u64) -> Vec<Check> {
-    SOURCES
+    SPECS
         .iter()
-        .map(|&source| {
-            let outcome = match keys.for_source(source) {
+        .flat_map(|spec| spec.apis.iter().map(move |api| (spec, api)))
+        .map(|(spec, api)| {
+            let outcome = match spec.key.map(|kind| keys.get(kind)) {
                 Some("") => Outcome::NotVerified("no key"),
-                key => match check(http, source, key.unwrap_or_default(), width, height, today) {
-                    Ok(passed) => passed,
-                    Err(failure) => Outcome::Failed(failure),
-                },
+                key => {
+                    let args = ProbeArgs {
+                        http,
+                        key: key.unwrap_or_default(),
+                        size: (width, height),
+                        today,
+                    };
+                    check(api, args).unwrap_or_else(Outcome::Failed)
+                }
             };
             Check {
-                source,
+                source: api.name,
                 outcome: outcome.scrubbed(keys),
             }
         })
         .collect()
 }
 
-fn check(
-    http: &Http,
-    source: &'static str,
-    key: &str,
-    width: u32,
-    height: u32,
-    today: u64,
-) -> Result<Outcome, Failure> {
-    type Parse<'a> = Box<dyn Fn(&str) -> Result<Vec<Candidate>> + 'a>;
-    let bing = http.base("Bing");
-    let (calls, parse): (Vec<Call>, Parse) = match source {
-        "Unsplash" => (
-            vec![unsplash::batch_call(http, key, "", &[], &[], "")],
-            Box::new(unsplash::parse_batch),
-        ),
-        "Pexels" => (
-            vec![pexels::batch_call(http, key, "", 1)],
-            Box::new(|body| Ok(pexels::parse_batch(body)?.0)),
-        ),
-        "Wallhaven" => (
-            vec![wallhaven::search_call(http, "", width, height)],
-            Box::new(wallhaven::parse_search),
-        ),
-        "Bing" => (
-            vec![daily::bing_call(http)],
-            Box::new(move |body| daily::parse_bing(bing, body)),
-        ),
-        _ => (
-            wikimedia_calls(http, today),
-            Box::new(|body| Ok(daily::parse_wikimedia(body)?.into_iter().collect())),
-        ),
-    };
+fn check(api: &Api, args: ProbeArgs<'_>) -> Result<Outcome, Failure> {
+    let ProbeArgs {
+        http,
+        size: (width, height),
+        ..
+    } = args;
+    let Probe {
+        calls,
+        parse,
+        report,
+    } = (api.probe)(args);
     let mut photo = None;
     for call in &calls {
         let body = send(http, call, "request")?;
@@ -454,7 +432,7 @@ fn check(
     let url = image_url(&photo, width, height)
         .filter(|url| url.starts_with("http"))
         .ok_or_else(|| Failure::new("image URL", Some(200), "the photo has no download URL"))?;
-    let bytes = send(http, &Call::new(calls[0].api, url.clone()), "image")?;
+    let bytes = send(http, &Call::new(api.name, url.clone()), "image")?;
     let img = image::load_from_memory(&bytes)
         .map_err(|e| Failure::new("image", Some(200), format!("{url} did not decode: {e}")))?;
     let size = (img.width(), img.height());
@@ -468,10 +446,9 @@ fn check(
             ),
         ));
     }
-    if source == "Unsplash" {
-        // The API terms: report the download of a photo the app fetched.
-        let report = photo.track_url.clone().unwrap_or_default();
-        send(http, &unsplash::track_call(key, &report), "download report")?;
+    if let Some(report) = report {
+        let track_url = photo.track_url.clone().unwrap_or_default();
+        send(http, &report(&track_url), "download report")?;
     }
     Ok(Outcome::Passed {
         photo: photo.id,
