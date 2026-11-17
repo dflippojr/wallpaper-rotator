@@ -126,6 +126,10 @@ impl Config {
         })
     }
 
+    /// Writes this config over the file without taking the lock. App code
+    /// changes the file through [`Config::update`] instead, so a concurrent
+    /// writer's change isn't lost; this is for first-run writes under the
+    /// lock and for tests that set up a file.
     pub fn save(&self, path: &Path) -> Result<()> {
         let text = toml::to_string_pretty(self)?;
         crate::store::write_atomic(path, text.as_bytes())
