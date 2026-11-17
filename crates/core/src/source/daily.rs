@@ -11,7 +11,7 @@
 use anyhow::{bail, Result};
 use serde::Deserialize;
 
-use super::{Candidate, Image, SourceId};
+use super::{Candidate, Image, SourceId, BING, WIKIMEDIA};
 use crate::net::{parse, Call, Http};
 
 /// Days of Wikimedia history to offer (one request each).
@@ -58,20 +58,20 @@ struct BingImage {
 }
 
 fn bing(http: &Http) -> Result<Vec<Candidate>> {
-    parse_bing(http.base("Bing"), &http.send(&bing_call(http))?)
+    parse_bing(http.base(BING.name), &http.send(&bing_call(http))?)
 }
 
 pub fn bing_call(http: &Http) -> Call {
-    let base = http.base("Bing");
+    let base = http.base(BING.name);
     Call::new(
-        "Bing",
+        BING.name,
         format!("{base}/HPImageArchive.aspx?format=js&idx=0&n=8&mkt=en-US"),
     )
 }
 
 /// `base` is the Bing API's base URL, which also serves the images.
 pub fn parse_bing(base: &str, body: &str) -> Result<Vec<Candidate>> {
-    let archive: BingArchive = parse("Bing", body)?;
+    let archive: BingArchive = parse(BING.name, body)?;
     Ok(archive
         .images
         .into_iter()
@@ -87,7 +87,7 @@ fn bing_candidate(base: &str, img: BingImage) -> Candidate {
             caption.trim().to_string(),
             rest.trim_end_matches(')').trim().to_string(),
         ),
-        None => (img.copyright.trim().to_string(), "Bing".to_string()),
+        None => (img.copyright.trim().to_string(), BING.name.to_string()),
     };
     let name = img
         .urlbase
@@ -168,15 +168,15 @@ fn wikimedia(http: &Http, y: i64, m: u32, d: u32) -> Result<Option<Candidate>> {
 pub fn wikimedia_call(http: &Http, y: i64, m: u32, d: u32) -> Call {
     let url = format!(
         "{}/feed/v1/wikipedia/en/featured/{y}/{m:02}/{d:02}",
-        http.base("Wikimedia")
+        http.base(WIKIMEDIA.name)
     );
-    Call::new("Wikimedia", url)
+    Call::new(WIKIMEDIA.name, url)
 }
 
 /// The day's picture, or `None` when there is none or it can't be a
 /// wallpaper (a portrait, or not a JPEG or PNG).
 pub fn parse_wikimedia(body: &str) -> Result<Option<Candidate>> {
-    let featured: Featured = parse("Wikimedia", body)?;
+    let featured: Featured = parse(WIKIMEDIA.name, body)?;
     Ok(featured.image.and_then(wikimedia_candidate))
 }
 

@@ -5,7 +5,7 @@
 use anyhow::{bail, Result};
 use serde::Deserialize;
 
-use super::{Candidate, Image, SourceId};
+use super::{Candidate, Image, SourceId, PEXELS};
 use crate::net::{append_query, encode, parse, Call, Http};
 
 pub const BATCH: u32 = 40;
@@ -59,7 +59,7 @@ pub fn batch(
 /// Page `page` of search results for `query`, or of curated photos.
 pub fn batch_call(http: &Http, key: &str, query: &str, page: u64) -> Call {
     let query = query.trim();
-    let api = http.base("Pexels");
+    let api = http.base(PEXELS.name);
     let url = if query.is_empty() {
         format!("{api}/v1/curated?per_page={BATCH}&page={page}")
     } else {
@@ -68,12 +68,12 @@ pub fn batch_call(http: &Http, key: &str, query: &str, page: u64) -> Call {
             encode(query)
         )
     };
-    Call::new("Pexels", url).header("Authorization", key.trim())
+    Call::new(PEXELS.name, url).header("Authorization", key.trim())
 }
 
 /// The landscape photos on a page, and how many pages there are.
 pub fn parse_batch(body: &str) -> Result<(Vec<Candidate>, u64)> {
-    let result: Page = parse("Pexels", body)?;
+    let result: Page = parse(PEXELS.name, body)?;
     let pages = result.total_results.div_ceil(u64::from(BATCH)).max(1);
     let photos: Vec<Candidate> = result
         .photos

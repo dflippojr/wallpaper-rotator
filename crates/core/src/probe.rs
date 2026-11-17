@@ -15,8 +15,6 @@ use crate::source::{daily, image_url, pexels, unsplash, wallhaven, Candidate, SP
 
 pub use crate::config::Keys;
 
-/// The sources the live check calls, by their API names.
-pub const SOURCES: [&str; 5] = ["Unsplash", "Pexels", "Wallhaven", "Bing", "Wikimedia"];
 /// Photos kept in a recorded list, so fixtures stay small.
 const KEEP: usize = 4;
 /// Fields about the account behind the key, not the photo. Removed from

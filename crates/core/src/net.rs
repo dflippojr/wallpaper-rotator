@@ -9,15 +9,8 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Result};
 use serde::de::DeserializeOwned;
 
-/// Where each source's API lives, keyed by the name sources pass to
-/// [`Http::get`].
-const BASES: [(&str, &str); 5] = [
-    ("Unsplash", "https://api.unsplash.com"),
-    ("Pexels", "https://api.pexels.com"),
-    ("Wallhaven", "https://wallhaven.cc"),
-    ("Bing", "https://www.bing.com"),
-    ("Wikimedia", "https://api.wikimedia.org"),
-];
+use crate::source;
+
 const MAX_IMAGE_BYTES: u64 = 80 * 1024 * 1024;
 /// Wikimedia asks API clients to say who they are.
 const USER_AGENT: &str = concat!(
@@ -78,14 +71,13 @@ impl Http {
         }
     }
 
-    /// The base URL of `name`'s API, without a trailing slash.
+    /// The base URL of `name`'s API (see [`source::SPECS`]), without a
+    /// trailing slash.
     pub fn base(&self, name: &str) -> &str {
-        self.bases.get(name).map(String::as_str).unwrap_or_else(|| {
-            BASES
-                .iter()
-                .find(|(n, _)| *n == name)
-                .map_or("", |(_, url)| url)
-        })
+        self.bases
+            .get(name)
+            .map(String::as_str)
+            .unwrap_or_else(|| source::api(name).map_or("", |api| api.base))
     }
 
     /// GETs `url` with extra headers. `name` labels errors ("Pexels ...").
@@ -187,7 +179,7 @@ impl Http {
 /// and the live check all send these, so they ask exactly the same thing.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Call {
-    /// The source's name in [`BASES`]; labels errors.
+    /// The API's name in [`source::SPECS`]; labels errors.
     pub api: &'static str,
     pub url: String,
     pub headers: Vec<(&'static str, String)>,
@@ -230,14 +222,18 @@ pub fn part_path(dest: &Path) -> std::path::PathBuf {
 pub(crate) fn explain(name: &'static str, err: ureq::Error) -> anyhow::Error {
     match err {
         ureq::Error::StatusCode(401) => anyhow!("{name} rejected the key"),
-        // Unsplash answers 403 when the hourly limit is used up.
-        ureq::Error::StatusCode(403) if name == "Unsplash" => RateLimited(name).into(),
+        ureq::Error::StatusCode(403) if forbidden_is_rate_limit(name) => RateLimited(name).into(),
         ureq::Error::StatusCode(429) => RateLimited(name).into(),
         ureq::Error::StatusCode(404) => anyhow::Error::new(ureq::Error::StatusCode(404))
             .context(format!("{name} found nothing for that search")),
         ureq::Error::StatusCode(code) => anyhow!("{name} returned HTTP {code}"),
         other => anyhow!("could not reach {name}: {}", redact(&other.to_string())),
     }
+}
+
+/// Whether `name`'s API answers 403 when its rate limit is used up.
+fn forbidden_is_rate_limit(name: &str) -> bool {
+    source::api(name).is_some_and(|api| api.forbidden_is_rate_limit)
 }
 
 /// What a credential is replaced with in errors and reports.
@@ -364,13 +360,27 @@ mod tests {
         assert!(is_rate_limited(&e));
         assert!(!is_rate_limited(&anyhow!("offline")));
         assert!(is_rate_limited(&explain(
-            "Unsplash",
+            source::UNSPLASH.name,
             ureq::Error::StatusCode(403)
         )));
         assert!(!is_rate_limited(&explain(
-            "Pexels",
+            source::PEXELS.name,
             ureq::Error::StatusCode(403)
         )));
+        // An image download is labelled with the source's name, which for
+        // Unsplash is also its API's.
+        assert!(is_rate_limited(&explain(
+            crate::source::SourceId::Unsplash.name(),
+            ureq::Error::StatusCode(403)
+        )));
+        for api in source::apis() {
+            let limited = is_rate_limited(&explain(api.name, ureq::Error::StatusCode(403)));
+            assert_eq!(limited, api.forbidden_is_rate_limit, "{}", api.name);
+            assert!(is_rate_limited(&explain(
+                api.name,
+                ureq::Error::StatusCode(429)
+            )));
+        }
     }
 
     #[test]
@@ -379,6 +389,10 @@ mod tests {
         assert_eq!(stub.base("Pexels"), "http://127.0.0.1:1");
         assert_eq!(stub.base("Unsplash"), "https://api.unsplash.com");
         assert_eq!(Http::default().base("Pexels"), "https://api.pexels.com");
+        for api in source::apis() {
+            assert_eq!(Http::default().base(api.name), api.base);
+        }
+        assert_eq!(Http::default().base("nowhere"), "");
     }
 
     #[test]

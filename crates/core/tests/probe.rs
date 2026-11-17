@@ -257,7 +257,7 @@ fn live_check_passes_every_source_and_reports_the_unsplash_download() {
             "{c:?}"
         );
     }
-    assert_eq!(checks.len(), probe::SOURCES.len());
+    assert_eq!(checks.len(), rotator_core::source::apis().count());
     assert_eq!(probe::not_verified(&checks), None);
     assert_eq!(probe::issue_body(&checks), None);
     // One request per source, as the app sends it.

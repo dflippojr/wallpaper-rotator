@@ -5,7 +5,7 @@
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
-use super::{Candidate, Image, SourceId};
+use super::{Candidate, Image, SourceId, UNSPLASH};
 use crate::net::{append_query, encode, parse, Call, Http};
 
 /// Appended to Unsplash links, as the API guidelines ask.
@@ -83,7 +83,7 @@ fn auth(key: &str) -> String {
 }
 
 fn call(key: &str, url: String) -> Call {
-    Call::new("Unsplash", url)
+    Call::new(UNSPLASH.name, url)
         .header("Authorization", auth(key))
         .header("Accept-Version", "v1")
 }
@@ -157,7 +157,7 @@ pub fn batch_call(
     username: &str,
 ) -> Call {
     let url = batch_url(
-        http.base("Unsplash"),
+        http.base(UNSPLASH.name),
         query,
         topic_ids,
         collections,
@@ -167,7 +167,7 @@ pub fn batch_call(
 }
 
 pub fn parse_batch(body: &str) -> Result<Vec<Candidate>> {
-    let photos: Vec<Photo> = parse("Unsplash", body)?;
+    let photos: Vec<Photo> = parse(UNSPLASH.name, body)?;
     Ok(photos.into_iter().map(candidate).collect())
 }
 
@@ -273,14 +273,14 @@ pub fn topic_id(http: &Http, key: &str, slug_or_id: &str) -> Result<String> {
 pub fn topic_call(http: &Http, key: &str, slug_or_id: &str) -> Call {
     let url = format!(
         "{}/topics/{}",
-        http.base("Unsplash"),
+        http.base(UNSPLASH.name),
         encode(slug_or_id.trim())
     );
     call(key, url)
 }
 
 pub fn parse_topic(body: &str) -> Result<String> {
-    let topic: Topic = parse("Unsplash", body)?;
+    let topic: Topic = parse(UNSPLASH.name, body)?;
     Ok(topic.id)
 }
 
@@ -538,7 +538,7 @@ mod tests {
 
     #[test]
     fn missing_collection_or_photographer_has_a_specific_error() {
-        let missing = || crate::net::explain("Unsplash", ureq::Error::StatusCode(404));
+        let missing = || crate::net::explain(UNSPLASH.name, ureq::Error::StatusCode(404));
         assert_eq!(
             batch_error(missing(), Selection::Collections).to_string(),
             "Unsplash couldn't find that collection"
@@ -551,7 +551,7 @@ mod tests {
             batch_error(missing(), Selection::Search).to_string(),
             "Unsplash found nothing for that search"
         );
-        let limited = crate::net::explain("Unsplash", ureq::Error::StatusCode(403));
+        let limited = crate::net::explain(UNSPLASH.name, ureq::Error::StatusCode(403));
         assert!(crate::net::is_rate_limited(&batch_error(
             limited,
             Selection::Collections

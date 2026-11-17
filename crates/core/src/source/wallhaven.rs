@@ -6,7 +6,7 @@
 use anyhow::Result;
 use serde::Deserialize;
 
-use super::{Candidate, Image, SourceId};
+use super::{Candidate, Image, SourceId, WALLHAVEN};
 use crate::net::{encode, parse, Call, Http};
 
 #[derive(Deserialize)]
@@ -40,18 +40,18 @@ pub fn batch(http: &Http, query: &str, min_width: u32, min_height: u32) -> Resul
 pub fn search_call(http: &Http, query: &str, min_width: u32, min_height: u32) -> Call {
     let mut url = format!(
         "{}/api/v1/search?categories=100&purity=100&sorting=random&ratios=landscape&atleast={min_width}x{min_height}",
-        http.base("Wallhaven")
+        http.base(WALLHAVEN.name)
     );
     let query = query.trim();
     if !query.is_empty() {
         url.push_str("&q=");
         url.push_str(&encode(query));
     }
-    Call::new("Wallhaven", url)
+    Call::new(WALLHAVEN.name, url)
 }
 
 pub fn parse_search(body: &str) -> Result<Vec<Candidate>> {
-    let page: Page = parse("Wallhaven", body)?;
+    let page: Page = parse(WALLHAVEN.name, body)?;
     Ok(page.data.into_iter().map(candidate).collect())
 }
 
@@ -62,7 +62,7 @@ fn candidate(w: Wallpaper) -> Candidate {
         width: w.dimension_x,
         height: w.dimension_y,
         // Search results don't name the uploader.
-        author: "Wallhaven".into(),
+        author: SourceId::Wallhaven.name().into(),
         author_url: w.url.clone(),
         photo_url: w.url,
         preview_url: w.thumbs.large,
